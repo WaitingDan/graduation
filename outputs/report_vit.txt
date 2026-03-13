@@ -1,0 +1,16 @@
+                                          precision    recall  f1-score   support
+
+            01.Ticonderoga-class_cruiser     1.0000    0.9667    0.9831        60
+        02.Arleigh_Burke-class_destroyer     0.9828    0.9828    0.9828        58
+              03.Akizuki-class_destroyer     1.0000    1.0000    1.0000         1
+              04.Wasp-class_assault_ship     1.0000    1.0000    1.0000        45
+     05.Hyuga-class_helicopter_destroyer     1.0000    1.0000    1.0000         2
+     06.Lzumo-class_helicopter_destroyer     1.0000    1.0000    1.0000         6
+07.Whitby_Island-class_dock_landing_ship     0.9643    1.0000    0.9818        27
+     08.San_Antonio-class_transport_dock     0.9697    1.0000    0.9846        32
+            09.Freedom-class_combat_ship     1.0000    1.0000    1.0000        17
+       10.Independence-class_combat_ship     1.0000    1.0000    1.0000        21
+
+                                accuracy                         0.9888       269
+                               macro avg     0.9917    0.9949    0.9932       269
+                            weighted avg     0.9891    0.9888    0.9888       269

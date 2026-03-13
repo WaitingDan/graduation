@@ -12,9 +12,7 @@ def evaluate_model(y_true, y_pred, class_names):
         digits=4
     )
 
-    print("\nClassification Report")
-    print(report)
-
     cm = confusion_matrix(y_true, y_pred)
 
-    return cm
+    # 返回混淆矩阵与文本报告，不在此打印
+    return cm, report

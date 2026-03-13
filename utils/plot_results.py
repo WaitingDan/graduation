@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import os
 
 
 def plot_curve(train_list, val_list, title, model_name):
@@ -17,7 +18,12 @@ def plot_curve(train_list, val_list, title, model_name):
 
     plt.legend()
 
-    save_path = model_name + "_" + title + "_curve.png"
+    # 保存到 outputs/ 目录
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    out_dir = os.path.join(root_dir, 'outputs')
+    os.makedirs(out_dir, exist_ok=True)
+
+    save_path = os.path.join(out_dir, model_name + "_" + title + "_curve.png")
 
     plt.savefig(save_path)
 
