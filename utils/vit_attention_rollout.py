@@ -6,6 +6,7 @@ import sys
 import argparse
 from torchvision import transforms
 
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 # ensure project root is importable
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT_DIR)
@@ -116,7 +117,6 @@ for attn in attentions:
     attn = attn / attn.sum(dim=-1, keepdim=True)
 
     result = torch.matmul(attn, result)
-
 mask = result[0, 0, 1:]
 
 size = int(mask.shape[0] ** 0.5)
