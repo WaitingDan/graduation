@@ -1,12 +1,11 @@
 import os
 import sys
-import json
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
 from tqdm import tqdm
-from torchvision import datasets, transforms
+from torchvision import datasets
 from torch.utils.data import DataLoader
 
 
@@ -14,33 +13,20 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT_DIR)
 
 from utils.plot_results import plot_curve
+from utils.common import get_device, build_default_transforms, write_class_indices
 
 from models.vgg_model import create_vgg
 
 
 def main():
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
     print("Using device:", device)
 
-    train_dir = os.path.join(ROOT_DIR, "dataset/ship_cls/train")
-    val_dir = os.path.join(ROOT_DIR, "dataset/ship_cls/val")
+    train_dir = os.path.join(ROOT_DIR, "dataset/ship_42/train")
+    val_dir = os.path.join(ROOT_DIR, "dataset/ship_42/val")
 
-    transform = {
-
-        "train": transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor()
-        ]),
-
-        "val": transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor()
-        ])
-    }
+    transform = build_default_transforms()
 
     train_dataset = datasets.ImageFolder(train_dir, transform["train"])
     val_dataset = datasets.ImageFolder(val_dir, transform["val"])
@@ -62,10 +48,7 @@ def main():
 
     print("Classes:", class_names)
 
-    class_dict = {str(i): name for i, name in enumerate(class_names)}
-
-    with open(os.path.join(ROOT_DIR, "class_indices.json"), "w") as f:
-        json.dump(class_dict, f, indent=4)
+    write_class_indices(class_names, os.path.join(ROOT_DIR, "class_indices.json"))
 
     model = create_vgg(num_classes)
     model = model.to(device)
@@ -74,7 +57,7 @@ def main():
 
     optimizer = optim.AdamW(model.parameters(), lr=1e-4)
 
-    epochs = 20
+    epochs = 15
     best_acc = 0
 
     weight_path = os.path.join(ROOT_DIR, "weights/vgg_best.pth")

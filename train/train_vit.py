@@ -1,12 +1,11 @@
 import os
 import sys
-import json
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
 from tqdm import tqdm
-from torchvision import datasets, transforms
+from torchvision import datasets
 from torch.utils.data import DataLoader
 
 
@@ -19,41 +18,28 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT_DIR)
 
 from utils.plot_results import plot_curve
+from utils.common import get_device, build_default_transforms, write_class_indices
 
 from models.vit_model import create_vit
 
 
 def main():
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
     print("Using device:", device)
 
     # ======================
     # 数据路径
     # ======================
 
-    train_dir = os.path.join(ROOT_DIR, "dataset/ship_cls/train")
-    val_dir = os.path.join(ROOT_DIR, "dataset/ship_cls/val")
+    train_dir = os.path.join(ROOT_DIR, "dataset/ship_42/train")
+    val_dir = os.path.join(ROOT_DIR, "dataset/ship_42/val")
 
     # ======================
     # 数据增强
     # ======================
 
-    data_transform = {
-
-        "train": transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor()
-        ]),
-
-        "val": transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor()
-        ])
-    }
+    data_transform = build_default_transforms()
 
     # ======================
     # 数据集
@@ -87,10 +73,7 @@ def main():
     # 保存类别索引
     # ======================
 
-    class_dict = {str(i): name for i, name in enumerate(class_names)}
-
-    with open(os.path.join(ROOT_DIR, "class_indices.json"), "w") as f:
-        json.dump(class_dict, f, indent=4)
+    write_class_indices(class_names, os.path.join(ROOT_DIR, "class_indices.json"))
 
     # ======================
     # 模型
@@ -107,7 +90,7 @@ def main():
     # 训练参数
     # ======================
 
-    epochs = 20
+    epochs = 15
     best_acc = 0
 
     weight_path = os.path.join(ROOT_DIR, "weights/vit_best.pth")

@@ -22,7 +22,7 @@ from models.vgg_model import create_vgg
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-test_path = os.path.join(ROOT_DIR, "dataset/ship_cls/test")
+test_path = os.path.join(ROOT_DIR, "dataset/ship_42/test")
 
 
 transform = transforms.Compose([
@@ -96,8 +96,8 @@ def run_evaluation(selected_models=None):
                 y_pred.extend(preds.tolist())
                 probs_all.extend(probs.tolist())
 
-        # 获取分类报告（文本）和混淆矩阵
-        cm, report = evaluate_model(y_true, y_pred, class_names)
+        # 获取分类报告（文本）、混淆矩阵，以及每类指标
+        cm, report, per_class_recall, per_class_overall_acc, support = evaluate_model(y_true, y_pred, class_names)
 
         # 保存预测 CSV 和分类报告
         try:
@@ -109,10 +109,54 @@ def run_evaluation(selected_models=None):
                 f.write('filepath,true_idx,true_name,pred_idx,pred_name,prob\n')
                 for (path, _), t, p, prob_row in zip(dataset.samples, y_true, y_pred, probs_all):
                     f.write(f'{path},{t},{class_names[t]},{p},{class_names[p]},{prob_row[p]:.6f}\n')
-            # report txt
+            # report txt（在原文本分类报告后追加每类准确率）
             rpt_path = os.path.join(out_dir, f'report_{name}.txt')
             with open(rpt_path, 'w', encoding='utf-8') as f:
                 f.write(report)
+                f.write('\n\nPer-class recall (TP / true_samples) and overall per-class accuracy:\n')
+                for i, cls in enumerate(class_names):
+                    f.write(f"{i}: {cls}  recall={per_class_recall[i]:.4f}  overall_acc={per_class_overall_acc[i]:.4f}  support={int(support[i])}\n")
+
+            # per-class CSV
+            per_csv = os.path.join(out_dir, f'per_class_{name}.csv')
+            with open(per_csv, 'w', encoding='utf-8') as f:
+                f.write('class_idx,class_name,recall,overall_acc,support\\n')
+                for i, cls in enumerate(class_names):
+                    f.write(f"{i},{cls},{per_class_recall[i]:.6f},{per_class_overall_acc[i]:.6f},{int(support[i])}\\n")
+
+            # 尝试导出为 Excel（如果安装了 pandas）
+            try:
+                import pandas as pd
+                df = pd.DataFrame({
+                    'class_idx': list(range(len(class_names))),
+                    'class_name': class_names,
+                    'recall': [float(x) for x in per_class_recall],
+                    'overall_acc': [float(x) for x in per_class_overall_acc],
+                    'support': [int(x) for x in support]
+                })
+                excel_path = os.path.join(out_dir, f'per_class_{name}.xlsx')
+                df.to_excel(excel_path, index=False)
+                print('Saved per-class Excel to', excel_path)
+            except Exception as e:
+                print('Could not save Excel (pandas missing or error):', e)
+
+            # 绘制每类 recall 的柱状图并保存为图片，便于查看
+            try:
+                fig2, ax2 = plt.subplots(figsize=(12, 6))
+                indices = range(len(class_names))
+                ax2.bar(indices, per_class_recall, color='tab:blue')
+                ax2.set_xticks(indices)
+                ax2.set_xticklabels(class_names, rotation=45, ha='right')
+                ax2.set_ylabel('Recall')
+                ax2.set_xlabel('Class')
+                ax2.set_title(f'Per-class Recall: {name}')
+                plt.tight_layout()
+                img_path = os.path.join(out_dir, f'per_class_{name}.png')
+                fig2.savefig(img_path)
+                plt.close(fig2)
+                print('Saved per-class bar chart to', img_path)
+            except Exception as e:
+                print('Failed to save per-class bar chart:', e)
         except Exception as e:
             print('Failed to save preds/report:', e)
 

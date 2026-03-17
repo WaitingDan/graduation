@@ -8,10 +8,15 @@
 /dataSources.local.xml
 *.bmp
 .idea/
+.github/
 .vscode/
 .DS_Store
+_pycache__/
 *.pyc
 *.pth
 weights/
 *.jpg
 *.png
+outputs/
+outputs_10/
+dataset/

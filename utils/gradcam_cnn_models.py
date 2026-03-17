@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import json
 import cv2
 import numpy as np
 import torch
@@ -17,10 +18,20 @@ from models.resnet_model import create_resnet
 from models.vgg_model import create_vgg
 
 
-def generate_gradcam(image_path, model_name, weight_path=None, out_dir=None, num_classes=10, device=None):
+def generate_gradcam(image_path, model_name, weight_path=None, out_dir=None, num_classes=None, device=None):
 
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # 如果未提供 num_classes，则尝试从 class_indices.json 中推断
+    if num_classes is None:
+        try:
+            cls_path = os.path.join(ROOT_DIR, 'class_indices.json')
+            with open(cls_path, 'r', encoding='utf-8') as f:
+                cls = json.load(f)
+            num_classes = len(cls)
+        except Exception:
+            num_classes = 10
 
     img = cv2.imread(image_path)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -73,7 +84,7 @@ def main():
     parser.add_argument('--model', choices=['resnet', 'vgg'], default='resnet')
     parser.add_argument('--weights', default=None, help='path to model weights')
     parser.add_argument('--out_dir', default=os.path.join(ROOT_DIR, 'outputs'))
-    parser.add_argument('--num_classes', type=int, default=10)
+    parser.add_argument('--num_classes', type=int, default=None)
     parser.add_argument('--device', default=None)
     args = parser.parse_args()
 

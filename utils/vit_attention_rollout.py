@@ -1,9 +1,12 @@
 import argparse
 import os
 import sys
+import json
 import cv2
 import numpy as np
 import torch
+import math
+import torch.nn.functional as F
 from torchvision import transforms
 
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
@@ -19,13 +22,23 @@ def generate_vit_rollout(
     image_path,
     weight_path=None,
     output_path=None,
-    num_classes=10,
+    num_classes=None,
     gamma=1.0,
     alpha=0.6,
     device=None,
 ):
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # 如果未提供 num_classes，则尝试从 class_indices.json 中推断
+    if num_classes is None:
+        try:
+            cls_path = os.path.join(ROOT_DIR, 'class_indices.json')
+            with open(cls_path, 'r', encoding='utf-8') as f:
+                cls = json.load(f)
+            num_classes = len(cls)
+        except Exception:
+            num_classes = 10
 
     if weight_path is None:
         weight_path = os.path.join(ROOT_DIR, 'weights/vit_best.pth')
@@ -52,23 +65,117 @@ def generate_vit_rollout(
     attentions = []
 
     def hook_fn(module, hook_input, hook_output):
+        # try to extract the input tensor (could be different shapes depending on implementation)
+        if len(hook_input) == 0:
+            return
+        x = hook_input[0]
+        if not isinstance(x, torch.Tensor):
+            return
+
         try:
-            x = hook_input[0]
+            # Case 1: qkv-style attention modules expose a `qkv` method/attribute
+            if hasattr(module, 'qkv') and hasattr(module, 'num_heads'):
+                # expected shape: (batch, tokens, channels)
+                if x.dim() != 3:
+                    return
+                bsz, tokens, channels = x.shape
+                qkv = module.qkv(x)
+                head_dim = channels // module.num_heads
+                qkv = qkv.reshape(bsz, tokens, 3, module.num_heads, head_dim).permute(2, 0, 3, 1, 4)
+                q, k, _v = qkv[0], qkv[1], qkv[2]
+                attn = (q @ k.transpose(-2, -1)) * module.scale
+                attn = attn.softmax(dim=-1)
+                attentions.append(attn.detach())
+                return
+
+            # Case 2: torch.nn.MultiheadAttention or similar (using in_proj_weight / in_proj_bias)
+            # hook_input for MultiheadAttention is often (query, key, value, ...)
+            if isinstance(module, torch.nn.MultiheadAttention) or hasattr(module, 'in_proj_weight'):
+                # pick the first tensor-like input as the sequence
+                seq = x
+                # support both (batch, tokens, channels) and (tokens, batch, channels)
+                if seq.dim() == 3:
+                    if getattr(module, 'batch_first', True):
+                        bsz, tokens, channels = seq.shape
+                        flat = seq.reshape(bsz * tokens, channels)
+                        proj_w = module.in_proj_weight
+                        proj_b = module.in_proj_bias if hasattr(module, 'in_proj_bias') else None
+                        qkv = F.linear(flat, proj_w, proj_b)
+                        qkv = qkv.view(bsz, tokens, 3, channels)
+                        q = qkv[:, :, 0, :]
+                        k = qkv[:, :, 1, :]
+                    else:
+                        tokens, bsz, channels = seq.shape
+                        flat = seq.reshape(tokens * bsz, channels)
+                        proj_w = module.in_proj_weight
+                        proj_b = module.in_proj_bias if hasattr(module, 'in_proj_bias') else None
+                        qkv = F.linear(flat, proj_w, proj_b)
+                        qkv = qkv.view(tokens, bsz, 3, channels)
+                        q = qkv[:, :, 0, :].permute(1, 0, 2)
+                        k = qkv[:, :, 1, :].permute(1, 0, 2)
+
+                    # reshape heads: (batch, heads, tokens, head_dim)
+                    num_heads = module.num_heads if hasattr(module, 'num_heads') else getattr(module, 'head_dim', 1)
+                    head_dim = channels // num_heads
+                    q = q.reshape(bsz, tokens, num_heads, head_dim).permute(0, 2, 1, 3)
+                    k = k.reshape(bsz, tokens, num_heads, head_dim).permute(0, 2, 1, 3)
+
+                    scale = 1.0 / math.sqrt(head_dim)
+                    attn = (q @ k.transpose(-2, -1)) * scale
+                    attn = attn.softmax(dim=-1)
+                    attentions.append(attn.detach())
+                    return
+
         except Exception:
             return
 
-        bsz, tokens, channels = x.shape
-        qkv = module.qkv(x)
-        head_dim = channels // module.num_heads
-        qkv = qkv.reshape(bsz, tokens, 3, module.num_heads, head_dim).permute(2, 0, 3, 1, 4)
-        q, k, _v = qkv[0], qkv[1], qkv[2]
-        attn = (q @ k.transpose(-2, -1)) * module.scale
-        attn = attn.softmax(dim=-1)
-        attentions.append(attn.detach())
-
     handles = []
-    for blk in model.blocks:
-        handles.append(blk.attn.register_forward_hook(hook_fn))
+    # prefer block list style: model.blocks with blk.attn
+    candidates = []
+    if hasattr(model, 'blocks'):
+        for blk in model.blocks:
+            att = getattr(blk, 'attn', None)
+            if att is not None and hasattr(att, 'register_forward_hook'):
+                handles.append(att.register_forward_hook(hook_fn))
+                candidates.append((f'blocks.{len(candidates)}', att.__class__.__name__))
+            else:
+                # if the block itself looks like an attention module
+                if all(hasattr(blk, a) for a in ('qkv', 'num_heads', 'scale')):
+                    handles.append(blk.register_forward_hook(hook_fn))
+                    candidates.append((f'blocks.{len(candidates)}', blk.__class__.__name__))
+
+    # fallback: scan all submodules and hook attention-like modules (robust for torchvision variants)
+    if len(handles) == 0:
+        for name, module in model.named_modules():
+            mclass = module.__class__.__name__.lower()
+            attrs = set(dir(module))
+            has_qkv = 'qkv' in attrs
+            has_q_and_k = 'q' in attrs and 'k' in attrs
+            has_num_heads = 'num_heads' in attrs or 'num_attention_heads' in attrs
+            name_hint = ('attn' in name.lower()) or ('attention' in name.lower()) or ('multihead' in mclass) or ('selfattention' in mclass) or ('attention' in mclass)
+
+            if (has_qkv or has_q_and_k) and (has_num_heads or 'scale' in attrs):
+                try:
+                    handles.append(module.register_forward_hook(hook_fn))
+                    candidates.append((name, module.__class__.__name__))
+                except Exception:
+                    pass
+            elif name_hint and hasattr(module, 'register_forward_hook'):
+                try:
+                    handles.append(module.register_forward_hook(hook_fn))
+                    candidates.append((name, module.__class__.__name__))
+                except Exception:
+                    pass
+
+    if len(handles) == 0:
+        # build short hint list to aid debugging
+        hints = []
+        for name, module in model.named_modules():
+            mclass = module.__class__.__name__
+            if (('attn' in name.lower()) or ('attention' in name.lower()) or 'qkv' in dir(module) or 'num_heads' in dir(module) or 'scale' in dir(module) or 'multihead' in mclass.lower()):
+                hints.append(f"{name} ({mclass})")
+        hint_msg = ', '.join(hints[:40]) if len(hints) > 0 else 'none'
+        raise RuntimeError(f'No attention modules found to hook into. Candidate modules: {hint_msg}')
 
     with torch.no_grad():
         _ = model(input_tensor)
@@ -124,7 +231,7 @@ def parse_args():
     parser.add_argument('--image', default=os.path.join(ROOT_DIR, 'test_images/test_ship_02.jpg'))
     parser.add_argument('--weights', default=os.path.join(ROOT_DIR, 'weights/vit_best.pth'))
     parser.add_argument('--output', default=os.path.join(ROOT_DIR, 'outputs', 'vit_attention_rollout.png'))
-    parser.add_argument('--num_classes', type=int, default=10)
+    parser.add_argument('--num_classes', type=int, default=None)
     parser.add_argument('--gamma', type=float, default=1.0)
     parser.add_argument('--alpha', type=float, default=0.6)
     parser.add_argument('--device', default=None)

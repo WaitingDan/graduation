@@ -2,6 +2,7 @@ import os
 import random
 import shutil
 import argparse
+import json
 
 random.seed(42)
 
@@ -56,7 +57,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', default=None, help='project root directory (defaults to two levels up)')
     parser.add_argument('--source', default='FGSCR', help='source folder name under dataset root')
-    parser.add_argument('--dataset_subdir', default='dataset/ship_cls', help='dataset subdir under project root')
+    parser.add_argument('--dataset_subdir', default='dataset/ship_42', help='dataset subdir under project root')
     parser.add_argument('--val_rate', type=float, default=0.2)
     parser.add_argument('--test_rate', type=float, default=0.1)
 
@@ -76,6 +77,16 @@ def main():
     test_dir = os.path.join(dataset_root, 'test')
 
     split_dataset(origin_dataset, train_dir, val_dir, test_dir, args.val_rate, args.test_rate)
+    # 自动生成 class_indices.json（基于 train 目录的类顺序）
+    try:
+        classes = sorted([d for d in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, d))])
+        class_dict = {str(i): name for i, name in enumerate(classes)}
+        out_path = os.path.join(root_dir, 'class_indices.json')
+        with open(out_path, 'w', encoding='utf-8') as f:
+            json.dump(class_dict, f, ensure_ascii=False, indent=4)
+        print('Wrote class indices to', out_path)
+    except Exception as e:
+        print('Failed to write class_indices.json:', e)
 
 
 if __name__ == '__main__':
