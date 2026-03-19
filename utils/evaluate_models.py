@@ -2,7 +2,7 @@ import torch
 import os
 import argparse
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
+from torchvision import datasets
 import sys
 
 # make project root importable early so local imports work
@@ -10,36 +10,37 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT_DIR)
 
 from utils.metrics import evaluate_model
+from utils.common import build_default_transforms
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import classification_report
 
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 from models.vit_model import create_vit
 from models.resnet_model import create_resnet
 from models.vgg_model import create_vgg
+from models.vit_fusion_model import create_vit_global_local
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-test_path = os.path.join(ROOT_DIR, "dataset/ship_42/test")
+
+def _pick_first_existing(*paths):
+    for path in paths:
+        if os.path.exists(path):
+            return path
+    return paths[0]
 
 
-transform = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
-    transforms.ToTensor()
-])
+def run_evaluation(selected_models=None, dataset_subdir='dataset/ship_fine', test_split='test', batch_size=32, num_workers=2):
+    test_path = os.path.join(ROOT_DIR, dataset_subdir, test_split)
+    transform = build_default_transforms()["val"]
+    dataset = datasets.ImageFolder(test_path, transform)
 
-dataset = datasets.ImageFolder(test_path, transform)
-
-
-def run_evaluation(selected_models=None):
     loader = DataLoader(
         dataset,
-        batch_size=32,
+        batch_size=batch_size,
         shuffle=False,
-        num_workers=2
+        num_workers=num_workers
     )
 
     class_names = dataset.classes
@@ -49,17 +50,34 @@ def run_evaluation(selected_models=None):
 
         "vgg": {
             "model": create_vgg(num_classes),
-            "weight": os.path.join(ROOT_DIR, "weights/vgg_best.pth")
+            "weight": _pick_first_existing(
+                os.path.join(ROOT_DIR, "weights/vgg_best.pth"),
+                os.path.join(ROOT_DIR, "weights/vgg_best_10.pth"),
+                os.path.join(ROOT_DIR, "weights/vgg_best_42.pth"),
+            )
         },
 
         "resnet": {
             "model": create_resnet(num_classes),
-            "weight": os.path.join(ROOT_DIR, "weights/resnet_best.pth")
+            "weight": _pick_first_existing(
+                os.path.join(ROOT_DIR, "weights/resnet_best.pth"),
+                os.path.join(ROOT_DIR, "weights/resnet_best_10.pth"),
+                os.path.join(ROOT_DIR, "weights/resnet_best_42.pth"),
+            )
         },
 
         "vit": {
             "model": create_vit(num_classes),
-            "weight": os.path.join(ROOT_DIR, "weights/vit_best.pth")
+            "weight": _pick_first_existing(
+                os.path.join(ROOT_DIR, "weights/vit_best.pth"),
+                os.path.join(ROOT_DIR, "weights/vit_best_10.pth"),
+                os.path.join(ROOT_DIR, "weights/vit_best_42.pth"),
+            )
+        },
+
+        "vit_fusion": {
+            "model": create_vit_global_local(num_classes=num_classes, pretrained=False),
+            "weight": os.path.join(ROOT_DIR, "weights/vit_fusion_best.pth")
         }
     }
 
@@ -72,6 +90,10 @@ def run_evaluation(selected_models=None):
 
         model = models[name]["model"]
         weight_path = models[name]["weight"]
+
+        if not os.path.exists(weight_path):
+            print(f'Skip {name}: weight not found -> {weight_path}')
+            continue
 
         model.load_state_dict(torch.load(weight_path, map_location=device))
 
@@ -88,6 +110,8 @@ def run_evaluation(selected_models=None):
                 images = images.to(device)
 
                 outputs = model(images)
+                if isinstance(outputs, (tuple, list)):
+                    outputs = outputs[-1]
 
                 probs = torch.softmax(outputs, dim=1).cpu().numpy()
                 preds = np.argmax(probs, axis=1)
@@ -97,7 +121,7 @@ def run_evaluation(selected_models=None):
                 probs_all.extend(probs.tolist())
 
         # 获取分类报告（文本）、混淆矩阵，以及每类指标
-        cm, report, per_class_recall, per_class_overall_acc, support = evaluate_model(y_true, y_pred, class_names)
+        cm, report, per_class_recall, per_class_overall_acc, support, macro_f1, balanced_acc = evaluate_model(y_true, y_pred, class_names)
 
         # 保存预测 CSV 和分类报告
         try:
@@ -113,6 +137,9 @@ def run_evaluation(selected_models=None):
             rpt_path = os.path.join(out_dir, f'report_{name}.txt')
             with open(rpt_path, 'w', encoding='utf-8') as f:
                 f.write(report)
+                f.write('\n\nSummary metrics:\n')
+                f.write(f'macro_f1={macro_f1:.4f}\n')
+                f.write(f'balanced_accuracy={balanced_acc:.4f}\n')
                 f.write('\n\nPer-class recall (TP / true_samples) and overall per-class accuracy:\n')
                 for i, cls in enumerate(class_names):
                     f.write(f"{i}: {cls}  recall={per_class_recall[i]:.4f}  overall_acc={per_class_overall_acc[i]:.4f}  support={int(support[i])}\n")
@@ -120,9 +147,11 @@ def run_evaluation(selected_models=None):
             # per-class CSV
             per_csv = os.path.join(out_dir, f'per_class_{name}.csv')
             with open(per_csv, 'w', encoding='utf-8') as f:
-                f.write('class_idx,class_name,recall,overall_acc,support\\n')
+                f.write('class_idx,class_name,recall,overall_acc,support\n')
                 for i, cls in enumerate(class_names):
-                    f.write(f"{i},{cls},{per_class_recall[i]:.6f},{per_class_overall_acc[i]:.6f},{int(support[i])}\\n")
+                    f.write(f"{i},{cls},{per_class_recall[i]:.6f},{per_class_overall_acc[i]:.6f},{int(support[i])}\n")
+
+            print(f'{name}: macro_f1={macro_f1:.4f}, balanced_accuracy={balanced_acc:.4f}')
 
             # 尝试导出为 Excel（如果安装了 pandas）
             try:
@@ -188,9 +217,19 @@ def run_evaluation(selected_models=None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit'], default=None)
+    parser.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit', 'vit_fusion'], default=None)
+    parser.add_argument('--dataset_subdir', default='dataset/ship_fine')
+    parser.add_argument('--test_split', default='test')
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--num_workers', type=int, default=2)
     args = parser.parse_args()
-    run_evaluation(selected_models=args.models)
+    run_evaluation(
+        selected_models=args.models,
+        dataset_subdir=args.dataset_subdir,
+        test_split=args.test_split,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+    )
 
 
 if __name__ == "__main__":

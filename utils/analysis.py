@@ -11,7 +11,13 @@ from utils.generate_visuals import run_visuals
 
 
 def cmd_eval(args):
-    run_evaluation(selected_models=args.models)
+    run_evaluation(
+        selected_models=args.models,
+        dataset_subdir=args.dataset_subdir,
+        test_split=args.test_split,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+    )
 
 
 def cmd_visuals(args):
@@ -20,7 +26,13 @@ def cmd_visuals(args):
 
 def cmd_pipeline(args):
     models = args.models if args.models else ['resnet']
-    run_evaluation(selected_models=models)
+    run_evaluation(
+        selected_models=models,
+        dataset_subdir=args.dataset_subdir,
+        test_split=args.test_split,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+    )
     if args.visuals:
         for m in models:
             csv_path = os.path.join(ROOT_DIR, 'outputs', f'preds_{m}.csv')
@@ -35,21 +47,29 @@ def build_parser():
     sub = parser.add_subparsers(dest='command', required=True)
 
     p_eval = sub.add_parser('eval', help='Run evaluation and save preds/report/confusion matrix')
-    p_eval.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit'], default=None)
+    p_eval.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit', 'vit_fusion'], default=None)
+    p_eval.add_argument('--dataset_subdir', default='dataset/ship_fine')
+    p_eval.add_argument('--test_split', default='test')
+    p_eval.add_argument('--batch_size', type=int, default=32)
+    p_eval.add_argument('--num_workers', type=int, default=2)
     p_eval.set_defaults(func=cmd_eval)
 
     p_vis = sub.add_parser('visuals', help='Generate visuals from preds csv')
-    p_vis.add_argument('--model', choices=['resnet', 'vgg', 'vit'], required=True)
+    p_vis.add_argument('--model', choices=['resnet', 'vgg', 'vit', 'vit_fusion'], required=True)
     p_vis.add_argument('--csv', required=True)
     p_vis.add_argument('--n', type=int, default=3)
     p_vis.add_argument('--out_dir', default=os.path.join(ROOT_DIR, 'outputs', 'visuals'))
     p_vis.set_defaults(func=cmd_visuals)
 
     p_pipe = sub.add_parser('pipeline', help='Run eval then optional visuals')
-    p_pipe.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit'], default=['resnet'])
+    p_pipe.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit', 'vit_fusion'], default=['resnet'])
     p_pipe.add_argument('--visuals', action='store_true')
     p_pipe.add_argument('--n', type=int, default=3)
     p_pipe.add_argument('--out_dir', default=os.path.join(ROOT_DIR, 'outputs', 'visuals'))
+    p_pipe.add_argument('--dataset_subdir', default='dataset/ship_fine')
+    p_pipe.add_argument('--test_split', default='test')
+    p_pipe.add_argument('--batch_size', type=int, default=32)
+    p_pipe.add_argument('--num_workers', type=int, default=2)
     p_pipe.set_defaults(func=cmd_pipeline)
 
     return parser
