@@ -228,7 +228,7 @@ def generate_vit_rollout(
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--image', default=os.path.join(ROOT_DIR, 'test_images/test_ship_02.jpg'))
+    parser.add_argument('--image', required=True, help='path to input image')
     parser.add_argument('--weights', default=os.path.join(ROOT_DIR, 'weights/vit_best.pth'))
     parser.add_argument('--output', default=os.path.join(ROOT_DIR, 'outputs', 'vit_attention_rollout.png'))
     parser.add_argument('--num_classes', type=int, default=None)

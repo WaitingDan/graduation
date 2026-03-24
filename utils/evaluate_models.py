@@ -2,6 +2,7 @@ import torch
 import os
 import argparse
 import random
+import json
 import numpy as np
 from torch.utils.data import DataLoader
 from torchvision import datasets
@@ -74,6 +75,16 @@ def run_evaluation(
 
     class_names = dataset.classes
     num_classes = len(class_names)
+    class_index_map = {str(i): cls for i, cls in enumerate(class_names)}
+
+    try:
+        out_dir = os.path.join(ROOT_DIR, output_subdir)
+        os.makedirs(out_dir, exist_ok=True)
+        class_map_path = os.path.join(out_dir, 'class_indices_eval.json')
+        with open(class_map_path, 'w', encoding='utf-8') as f:
+            json.dump(class_index_map, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print('Failed to save class index mapping:', e)
 
     models = {
 
@@ -216,13 +227,13 @@ def run_evaluation(
             # 绘制每类 recall 的柱状图并保存为图片，便于查看
             try:
                 fig2, ax2 = plt.subplots(figsize=(12, 6))
-                indices = range(len(class_names))
+                indices = list(range(len(class_names)))
                 ax2.bar(indices, per_class_recall, color='tab:blue')
                 ax2.set_xticks(indices)
-                ax2.set_xticklabels(class_names, rotation=45, ha='right')
+                ax2.set_xticklabels([str(i) for i in indices], rotation=0)
                 ax2.set_ylabel('Recall')
-                ax2.set_xlabel('Class')
-                ax2.set_title(f'Per-class Recall: {name}')
+                ax2.set_xlabel('Class Index')
+                ax2.set_title(f'Per-class Recall: {name} (indexed labels)')
                 plt.tight_layout()
                 img_path = os.path.join(out_dir, f'per_class_{name}{file_suffix}.png')
                 fig2.savefig(img_path)

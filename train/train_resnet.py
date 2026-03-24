@@ -46,10 +46,10 @@ def set_seed(seed: int):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset_subdir', default='dataset/ship_fine', help='dataset subdir under project root')
-    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=30)
-    parser.add_argument('--lr', type=float, default=1e-4, help='learning rate for fine-tuning')
+    parser.add_argument('--lr', type=float, default=4e-4, help='learning rate for fine-tuning')
     parser.add_argument('--weight_name', default='resnet_best.pth', help='output weight file name under weights/')
     parser.add_argument('--seed', type=int, default=42, help='random seed for reproducibility')
     parser.add_argument('--early_stop_patience', type=int, default=10, help='early stopping patience')

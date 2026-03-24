@@ -40,13 +40,13 @@ pip install torch torchvision scikit-learn matplotlib opencv-python pillow tqdm 
 ### 第1步：训练一个模型（ResNet）
 
 ```powershell
-python train/train_resnet.py --dataset_subdir dataset/ship_fine --epochs 30 --batch_size 8 --num_workers 0 --weight_name resnet_best.pth --seed 42
+python train/train_resnet.py --dataset_subdir dataset/ship_fine --epochs 30 --batch_size 32 --num_workers 0 --weight_name resnet_best.pth --seed 42
 ```
 
 ### 第2步：评估该模型
 
 ```powershell
-python utils/analysis.py eval --models resnet --dataset_subdir dataset/ship_fine --test_split test --batch_size 8 --num_workers 0
+python utils/analysis.py eval --models resnet --dataset_subdir dataset/ship_fine --test_split test --batch_size 32 --num_workers 0
 ```
 
 ### 第3步：生成可视化
@@ -62,22 +62,22 @@ python utils/analysis.py visuals --model resnet --csv outputs/preds_resnet.csv -
 ### 3.1 训练四个模型
 
 ```powershell
-python train/train_resnet.py --dataset_subdir dataset/ship_fine --batch_size 8 --num_workers 0 --epochs 30 --lr 1e-4 --weight_name resnet_best.pth --seed 42
-python train/train_vgg.py --dataset_subdir dataset/ship_fine --batch_size 8 --num_workers 0 --epochs 30 --lr 1e-4 --weight_name vgg_best.pth --seed 42
-python train/train_vit.py --dataset_subdir dataset/ship_fine --batch_size 8 --num_workers 0 --epochs 30 --lr 1e-4 --weight_name vit_best.pth --seed 42
-python train/train_vit_fusion.py --dataset_subdir dataset/ship_fine --batch_size 8 --num_workers 0 --epochs 30 --lr 1e-4 --crop_size 112 --topk_patches 5 --dropout 0.2 --weight_name vit_fusion_best.pth --seed 42
+python train/train_resnet.py --dataset_subdir dataset/ship_fine --batch_size 32 --num_workers 0 --epochs 30 --lr 4e-4 --weight_name resnet_best.pth --seed 42
+python train/train_vgg.py --dataset_subdir dataset/ship_fine --batch_size 32 --num_workers 0 --epochs 30 --lr 4e-4 --weight_name vgg_best.pth --seed 42
+python train/train_vit.py --dataset_subdir dataset/ship_fine --batch_size 16 --num_workers 0 --epochs 30 --lr 2e-4 --weight_name vit_best.pth --seed 42
+python train/train_vit_fusion.py --dataset_subdir dataset/ship_fine --batch_size 16 --num_workers 0 --epochs 30 --lr 2e-4 --crop_size 112 --topk_patches 5 --dropout 0.2 --weight_name vit_fusion_best.pth --seed 42
 ```
 
 ### 3.2 统一评估
 
 ```powershell
-python utils/analysis.py eval --models resnet vgg vit vit_fusion --dataset_subdir dataset/ship_fine --test_split test --batch_size 8 --num_workers 0 --eval_occlusion_mode none --eval_occlusion_level light --eval_occlusion_p 0.0 --output_subdir outputs --file_suffix ""
+python utils/analysis.py eval --models resnet vgg vit vit_fusion --dataset_subdir dataset/ship_fine --test_split test --batch_size 32 --num_workers 0 --eval_occlusion_mode none --eval_occlusion_level light --eval_occlusion_p 0.0 --output_subdir outputs --file_suffix ""
 ```
 
 ### 3.3 统一可视化（可选）
 
 ```powershell
-python utils/analysis.py pipeline --models resnet vgg vit vit_fusion --visuals --n 3 --out_dir outputs/visuals --dataset_subdir dataset/ship_fine --test_split test --batch_size 8 --num_workers 0
+python utils/analysis.py pipeline --models resnet vgg vit vit_fusion --visuals --n 3 --out_dir outputs/visuals --dataset_subdir dataset/ship_fine --test_split test --batch_size 32 --num_workers 0
 ```
 
 ---
@@ -131,8 +131,8 @@ python utils/keypart_experiments/export_report.py --summary_csv outputs/keypart_
 本项目当前流程不再依赖 `predict/` 与 `test_images/`。建议统一使用以下批量命令：
 
 ```powershell
-python utils/analysis.py eval --models resnet vgg vit vit_fusion --dataset_subdir dataset/ship_fine --test_split test --batch_size 8 --num_workers 0
-python utils/analysis.py pipeline --models resnet vgg vit vit_fusion --visuals --n 3 --out_dir outputs/visuals --dataset_subdir dataset/ship_fine --test_split test --batch_size 8 --num_workers 0
+python utils/analysis.py eval --models resnet vgg vit vit_fusion --dataset_subdir dataset/ship_fine --test_split test --batch_size 32 --num_workers 0
+python utils/analysis.py pipeline --models resnet vgg vit vit_fusion --visuals --n 3 --out_dir outputs/visuals --dataset_subdir dataset/ship_fine --test_split test --batch_size 32 --num_workers 0
 ```
 
 ---
@@ -181,4 +181,13 @@ python utils/keypart_experiments/run_occlusion_suite.py --help
 python utils/keypart_experiments/analyze_robustness_slope.py --help
 python utils/keypart_experiments/export_report.py --help
 python utils/visualize_robustness_ranking.py
+python utils/vit_attention_rollout.py --image 你的图片路径.jpg --weights weights/vit_best.pth --output outputs/vit_attention_rollout.png
 ```
+
+---
+
+## 9. 当前代码口径说明（2026-03 更新）
+
+- 已移除 `predict/` 与 `test_images/`，主流程仅保留训练与批量评估。
+- `train/train_vit.py` 当前仅训练标准 ViT，不再包含 local-global 可选分支。
+- 如需 ViT attention rollout，可使用 `utils/vit_attention_rollout.py`，并必须显式传入 `--image`。

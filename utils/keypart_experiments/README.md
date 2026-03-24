@@ -1,5 +1,10 @@
 # Key-part Occlusion Experiments
 
+当前说明：
+- 本实验流程默认评估模型为 `resnet` / `vgg` / `vit` / `vit_fusion`。
+- 项目当前不包含 `predict/` 与 `test_images/` 目录，建议统一走批量评估流程。
+- `train/train_vit.py` 训练的是标准 ViT；融合模型请使用 `train/train_vit_fusion.py`。
+
 ## 1) 批量评估（标准模式，保存 CSV + JSON）
 
 ```bash
@@ -42,3 +47,11 @@ python utils/visualize_robustness_ranking.py
 ```
 
 说明：脚本会优先读取 outputs/keypart_experiments/robustness_slope_ranking.json；若不存在再读取同名 CSV。
+
+## 6) 输出目录说明（避免重复存放）
+
+- `run_occlusion_suite.py` 的默认输出根目录是 `outputs/keypart_experiments`。
+- 每次评估的明细文件（`preds_*`、`report_*`、`per_class_*`、`confmat_*`）会写入：
+	- `outputs/keypart_experiments/runs/<scenario>/seed_<seed>/`
+- 因此在 keypart 实验流程中，不需要再额外把同一批模型结果重复放到 `outputs/` 根目录。
+- `outputs/` 根目录下的结果通常用于通用评估流程（如 `utils/analysis.py eval`），与 keypart 实验可并行存在但不是必须。

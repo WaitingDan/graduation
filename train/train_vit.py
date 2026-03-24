@@ -38,7 +38,6 @@ from utils.plot_results import plot_curve
 from utils.common import get_device, build_default_transforms, write_class_indices
 
 from models.vit_model import create_vit
-from models.vit_local_global import create_vit_local_global
 
 
 def set_seed(seed: int):
@@ -53,12 +52,10 @@ def set_seed(seed: int):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset_subdir', default='dataset/ship_fine', help='dataset subdir under project root')
-    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=30)
-    parser.add_argument('--lr', type=float, default=1e-4, help='learning rate for fine-tuning')
-    parser.add_argument('--use_local_global', action='store_true', help='use local-global vit branch fusion')
-    parser.add_argument('--top_ratio', type=float, default=0.2, help='top attention ratio for local branch')
+    parser.add_argument('--lr', type=float, default=2e-4, help='learning rate for fine-tuning')
     parser.add_argument('--weight_name', default='vit_best.pth', help='output weight file name under weights/')
     parser.add_argument('--seed', type=int, default=42, help='random seed for reproducibility')
     parser.add_argument('--early_stop_patience', type=int, default=10, help='early stopping patience')
@@ -132,12 +129,8 @@ def main():
     # 模型
     # ======================
 
-    if args.use_local_global:
-        model = create_vit_local_global(num_classes=num_classes, top_ratio=args.top_ratio)
-        print(f"Model: LocalGlobalViT (top_ratio={args.top_ratio})")
-    else:
-        model = create_vit(num_classes)
-        print("Model: ViT")
+    model = create_vit(num_classes)
+    print("Model: ViT")
 
     model = model.to(device)
 
