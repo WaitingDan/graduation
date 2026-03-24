@@ -17,6 +17,12 @@ def cmd_eval(args):
         test_split=args.test_split,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        eval_occlusion_mode=args.eval_occlusion_mode,
+        eval_occlusion_level=args.eval_occlusion_level,
+        eval_occlusion_p=args.eval_occlusion_p,
+        output_subdir=args.output_subdir,
+        file_suffix=args.file_suffix,
+        seed=args.seed,
     )
 
 
@@ -32,10 +38,16 @@ def cmd_pipeline(args):
         test_split=args.test_split,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        eval_occlusion_mode=args.eval_occlusion_mode,
+        eval_occlusion_level=args.eval_occlusion_level,
+        eval_occlusion_p=args.eval_occlusion_p,
+        output_subdir=args.output_subdir,
+        file_suffix=args.file_suffix,
+        seed=args.seed,
     )
     if args.visuals:
         for m in models:
-            csv_path = os.path.join(ROOT_DIR, 'outputs', f'preds_{m}.csv')
+            csv_path = os.path.join(ROOT_DIR, args.output_subdir, f'preds_{m}{args.file_suffix}.csv')
             if not os.path.exists(csv_path):
                 print(f'Skip {m}: csv not found -> {csv_path}')
                 continue
@@ -52,6 +64,12 @@ def build_parser():
     p_eval.add_argument('--test_split', default='test')
     p_eval.add_argument('--batch_size', type=int, default=32)
     p_eval.add_argument('--num_workers', type=int, default=2)
+    p_eval.add_argument('--eval_occlusion_mode', choices=['none', 'block', 'stripe', 'mixed'], default='none')
+    p_eval.add_argument('--eval_occlusion_level', choices=['light', 'medium', 'heavy'], default='light')
+    p_eval.add_argument('--eval_occlusion_p', type=float, default=0.0)
+    p_eval.add_argument('--output_subdir', default='outputs')
+    p_eval.add_argument('--file_suffix', default='')
+    p_eval.add_argument('--seed', type=int, default=None)
     p_eval.set_defaults(func=cmd_eval)
 
     p_vis = sub.add_parser('visuals', help='Generate visuals from preds csv')
@@ -70,6 +88,12 @@ def build_parser():
     p_pipe.add_argument('--test_split', default='test')
     p_pipe.add_argument('--batch_size', type=int, default=32)
     p_pipe.add_argument('--num_workers', type=int, default=2)
+    p_pipe.add_argument('--eval_occlusion_mode', choices=['none', 'block', 'stripe', 'mixed'], default='none')
+    p_pipe.add_argument('--eval_occlusion_level', choices=['light', 'medium', 'heavy'], default='light')
+    p_pipe.add_argument('--eval_occlusion_p', type=float, default=0.0)
+    p_pipe.add_argument('--output_subdir', default='outputs')
+    p_pipe.add_argument('--file_suffix', default='')
+    p_pipe.add_argument('--seed', type=int, default=None)
     p_pipe.set_defaults(func=cmd_pipeline)
 
     return parser

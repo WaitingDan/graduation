@@ -1,6 +1,8 @@
 import torch
 import os
 import argparse
+import random
+import numpy as np
 from torch.utils.data import DataLoader
 from torchvision import datasets
 import sys
@@ -24,6 +26,15 @@ from models.vit_fusion_model import create_vit_global_local
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def set_seed(seed):
+    if seed is None:
+        return
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+
+
 def _pick_first_existing(*paths):
     for path in paths:
         if os.path.exists(path):
@@ -31,9 +42,27 @@ def _pick_first_existing(*paths):
     return paths[0]
 
 
-def run_evaluation(selected_models=None, dataset_subdir='dataset/ship_fine', test_split='test', batch_size=32, num_workers=2):
+def run_evaluation(
+    selected_models=None,
+    dataset_subdir='dataset/ship_fine',
+    test_split='test',
+    batch_size=32,
+    num_workers=2,
+    eval_occlusion_mode='none',
+    eval_occlusion_level='light',
+    eval_occlusion_p=0.0,
+    output_subdir='outputs',
+    file_suffix='',
+    seed=None,
+):
+    set_seed(seed)
+
     test_path = os.path.join(ROOT_DIR, dataset_subdir, test_split)
-    transform = build_default_transforms()["val"]
+    transform = build_default_transforms(
+        val_occlusion_mode=eval_occlusion_mode,
+        val_occlusion_level=eval_occlusion_level,
+        val_occlusion_p=eval_occlusion_p,
+    )["val"]
     dataset = datasets.ImageFolder(test_path, transform)
 
     loader = DataLoader(
@@ -83,6 +112,8 @@ def run_evaluation(selected_models=None, dataset_subdir='dataset/ship_fine', tes
 
     model_names = selected_models if selected_models else list(models.keys())
 
+    all_metrics = []
+
     for name in model_names:
 
         if name not in models:
@@ -125,16 +156,16 @@ def run_evaluation(selected_models=None, dataset_subdir='dataset/ship_fine', tes
 
         # 保存预测 CSV 和分类报告
         try:
-            out_dir = os.path.join(ROOT_DIR, 'outputs')
+            out_dir = os.path.join(ROOT_DIR, output_subdir)
             os.makedirs(out_dir, exist_ok=True)
             # preds csv
-            csv_path = os.path.join(out_dir, f'preds_{name}.csv')
+            csv_path = os.path.join(out_dir, f'preds_{name}{file_suffix}.csv')
             with open(csv_path, 'w', encoding='utf-8') as f:
                 f.write('filepath,true_idx,true_name,pred_idx,pred_name,prob\n')
                 for (path, _), t, p, prob_row in zip(dataset.samples, y_true, y_pred, probs_all):
                     f.write(f'{path},{t},{class_names[t]},{p},{class_names[p]},{prob_row[p]:.6f}\n')
             # report txt（在原文本分类报告后追加每类准确率）
-            rpt_path = os.path.join(out_dir, f'report_{name}.txt')
+            rpt_path = os.path.join(out_dir, f'report_{name}{file_suffix}.txt')
             with open(rpt_path, 'w', encoding='utf-8') as f:
                 f.write(report)
                 f.write('\n\nSummary metrics:\n')
@@ -145,13 +176,26 @@ def run_evaluation(selected_models=None, dataset_subdir='dataset/ship_fine', tes
                     f.write(f"{i}: {cls}  recall={per_class_recall[i]:.4f}  overall_acc={per_class_overall_acc[i]:.4f}  support={int(support[i])}\n")
 
             # per-class CSV
-            per_csv = os.path.join(out_dir, f'per_class_{name}.csv')
+            per_csv = os.path.join(out_dir, f'per_class_{name}{file_suffix}.csv')
             with open(per_csv, 'w', encoding='utf-8') as f:
                 f.write('class_idx,class_name,recall,overall_acc,support\n')
                 for i, cls in enumerate(class_names):
                     f.write(f"{i},{cls},{per_class_recall[i]:.6f},{per_class_overall_acc[i]:.6f},{int(support[i])}\n")
 
             print(f'{name}: macro_f1={macro_f1:.4f}, balanced_accuracy={balanced_acc:.4f}')
+
+            all_metrics.append({
+                'model': name,
+                'macro_f1': float(macro_f1),
+                'balanced_accuracy': float(balanced_acc),
+                'dataset_subdir': dataset_subdir,
+                'test_split': test_split,
+                'eval_occlusion_mode': eval_occlusion_mode,
+                'eval_occlusion_level': eval_occlusion_level,
+                'eval_occlusion_p': float(eval_occlusion_p),
+                'seed': seed,
+                'output_subdir': output_subdir,
+            })
 
             # 尝试导出为 Excel（如果安装了 pandas）
             try:
@@ -163,7 +207,7 @@ def run_evaluation(selected_models=None, dataset_subdir='dataset/ship_fine', tes
                     'overall_acc': [float(x) for x in per_class_overall_acc],
                     'support': [int(x) for x in support]
                 })
-                excel_path = os.path.join(out_dir, f'per_class_{name}.xlsx')
+                excel_path = os.path.join(out_dir, f'per_class_{name}{file_suffix}.xlsx')
                 df.to_excel(excel_path, index=False)
                 print('Saved per-class Excel to', excel_path)
             except Exception as e:
@@ -180,7 +224,7 @@ def run_evaluation(selected_models=None, dataset_subdir='dataset/ship_fine', tes
                 ax2.set_xlabel('Class')
                 ax2.set_title(f'Per-class Recall: {name}')
                 plt.tight_layout()
-                img_path = os.path.join(out_dir, f'per_class_{name}.png')
+                img_path = os.path.join(out_dir, f'per_class_{name}{file_suffix}.png')
                 fig2.savefig(img_path)
                 plt.close(fig2)
                 print('Saved per-class bar chart to', img_path)
@@ -191,7 +235,7 @@ def run_evaluation(selected_models=None, dataset_subdir='dataset/ship_fine', tes
 
         # 保存混淆矩阵为图片
         try:
-            out_dir = os.path.join(ROOT_DIR, 'outputs')
+            out_dir = os.path.join(ROOT_DIR, output_subdir)
             os.makedirs(out_dir, exist_ok=True)
             fig, ax = plt.subplots(figsize=(8, 6))
             im = ax.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
@@ -207,12 +251,14 @@ def run_evaluation(selected_models=None, dataset_subdir='dataset/ship_fine', tes
                     ax.text(j, i, format(cm[i, j], 'd'), ha='center', va='center',
                             color='white' if cm[i, j] > thresh else 'black')
             plt.tight_layout()
-            fig_path = os.path.join(out_dir, f'confmat_{name}.png')
+            fig_path = os.path.join(out_dir, f'confmat_{name}{file_suffix}.png')
             fig.savefig(fig_path)
             plt.close(fig)
             print('Saved confusion matrix to', fig_path)
         except Exception as e:
             print('Failed to save confusion matrix image:', e)
+
+    return all_metrics
 
 
 def main():
@@ -222,6 +268,12 @@ def main():
     parser.add_argument('--test_split', default='test')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=2)
+    parser.add_argument('--eval_occlusion_mode', choices=['none', 'block', 'stripe', 'mixed'], default='none')
+    parser.add_argument('--eval_occlusion_level', choices=['light', 'medium', 'heavy'], default='light')
+    parser.add_argument('--eval_occlusion_p', type=float, default=0.0)
+    parser.add_argument('--output_subdir', default='outputs')
+    parser.add_argument('--file_suffix', default='')
+    parser.add_argument('--seed', type=int, default=None)
     args = parser.parse_args()
     run_evaluation(
         selected_models=args.models,
@@ -229,6 +281,12 @@ def main():
         test_split=args.test_split,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        eval_occlusion_mode=args.eval_occlusion_mode,
+        eval_occlusion_level=args.eval_occlusion_level,
+        eval_occlusion_p=args.eval_occlusion_p,
+        output_subdir=args.output_subdir,
+        file_suffix=args.file_suffix,
+        seed=args.seed,
     )
 
 

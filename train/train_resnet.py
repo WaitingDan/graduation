@@ -53,6 +53,9 @@ def parse_args():
     parser.add_argument('--weight_name', default='resnet_best.pth', help='output weight file name under weights/')
     parser.add_argument('--seed', type=int, default=42, help='random seed for reproducibility')
     parser.add_argument('--early_stop_patience', type=int, default=10, help='early stopping patience')
+    parser.add_argument('--train_occlusion_mode', choices=['none', 'block', 'stripe', 'mixed'], default='none')
+    parser.add_argument('--train_occlusion_level', choices=['light', 'medium', 'heavy'], default='light')
+    parser.add_argument('--train_occlusion_p', type=float, default=0.0)
     return parser.parse_args()
 
 
@@ -68,7 +71,11 @@ def main():
     train_dir = os.path.join(ROOT_DIR, args.dataset_subdir, "train")
     val_dir = os.path.join(ROOT_DIR, args.dataset_subdir, "val")
 
-    transform = build_default_transforms()
+    transform = build_default_transforms(
+        train_occlusion_mode=args.train_occlusion_mode,
+        train_occlusion_level=args.train_occlusion_level,
+        train_occlusion_p=args.train_occlusion_p,
+    )
 
     train_dataset = datasets.ImageFolder(train_dir, transform["train"])
     val_dataset = datasets.ImageFolder(val_dir, transform["val"])
