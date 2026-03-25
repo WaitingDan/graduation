@@ -5,11 +5,11 @@ python train/train_resnet.py \
     --dataset_subdir dataset/ship_fine \
     --epochs 15 \
     --batch_size 32 \
-    --lr 1e-4 \
+    --lr 4e-4 \
     --weight_name resnet_best.pth
 
 Notes:
-- 为了保证与其它模型的公平比较，默认使用 epochs=30, batch_size=32, lr=1e-4。
+- 为了保证与其它模型的公平比较，默认使用 epochs=30, batch_size=32, lr=4e-4。
 """
 
 import os

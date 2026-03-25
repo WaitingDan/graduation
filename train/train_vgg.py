@@ -5,11 +5,11 @@ python train/train_vgg.py \
     --dataset_subdir dataset/ship_fine \
     --epochs 30 \
     --batch_size 8 \
-    --lr 1e-4 \
+    --lr 4e-4 \
     --weight_name vgg_best.pth
 
 Notes:
-- 默认超参与其它训练脚本保持一致：epochs=30, batch_size=8, lr=1e-4。
+- 默认超参与其它训练脚本保持一致：epochs=30, batch_size=8, lr=4e-4。
 """
 
 import os

@@ -83,6 +83,7 @@ def run_evaluation(
         class_map_path = os.path.join(out_dir, 'class_indices_eval.json')
         with open(class_map_path, 'w', encoding='utf-8') as f:
             json.dump(class_index_map, f, ensure_ascii=False, indent=2)
+        print('Saved class index mapping to', class_map_path)
     except Exception as e:
         print('Failed to save class index mapping:', e)
 
@@ -251,11 +252,14 @@ def run_evaluation(
             fig, ax = plt.subplots(figsize=(8, 6))
             im = ax.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
             ax.figure.colorbar(im, ax=ax)
+            # Use numeric indices as tick labels to avoid overcrowding;
+            # full mapping is saved to `class_indices_eval.json`.
+            indices = list(range(len(class_names)))
             ax.set(xticks=np.arange(len(class_names)), yticks=np.arange(len(class_names)),
-                   xticklabels=class_names, yticklabels=class_names,
-                   ylabel='True label', xlabel='Predicted label',
+                   xticklabels=indices, yticklabels=indices,
+                   ylabel='True label (index)', xlabel='Predicted label (index)',
                    title=f'Confusion Matrix: {name}')
-            plt.setp(ax.get_xticklabels(), rotation=45, ha='right', rotation_mode='anchor')
+            plt.setp(ax.get_xticklabels(), rotation=0)
             thresh = cm.max() / 2.
             for i in range(cm.shape[0]):
                 for j in range(cm.shape[1]):

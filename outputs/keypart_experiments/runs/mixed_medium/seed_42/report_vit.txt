@@ -1,0 +1,70 @@
+                                           precision    recall  f1-score   support
+
+        001.Nimitz-class_aircraft_carrier     1.0000    0.9455    0.9720        55
+     002.KittyHawk-class_aircraft_carrier     1.0000    1.0000    1.0000         6
+        003.Midway-class_aircraft_carrier     1.0000    1.0000    1.0000        20
+     004.Kuznetsov-class_aircraft_carrier     1.0000    1.0000    1.0000         6
+            008.Ticonderoga-class_cruiser     0.8947    0.8500    0.8718        60
+        009.Arleigh_Burke-class_destroyer     0.8710    0.9310    0.9000        58
+              011.Asagiri-class_destroyer     0.8750    1.0000    0.9333         7
+                 012.Kidd-class_destroyer     1.0000    1.0000    1.0000         6
+                    013.Type_45_destroyer     1.0000    1.0000    1.0000        15
+              014.Wasp-class_assault_ship     0.8958    0.9556    0.9247        45
+             015.Osumi-class_landing_ship     1.0000    1.0000    1.0000        11
+     017.Lzumo-class_helicopter_destroyer     1.0000    1.0000    1.0000         6
+018.Whitby_Island-class_dock_landing_ship     0.9259    0.9259    0.9259        27
+     019.San_Antonio-class_transport_dock     1.0000    0.9355    0.9667        31
+            020.Freedom-class_combat_ship     0.9333    0.8235    0.8750        17
+       021.Independence-class_combat_ship     1.0000    0.9048    0.9500        21
+        022.Sacramento-class_support_ship     0.7143    1.0000    0.8333         5
+                           023.Crane_ship     0.8750    1.0000    0.9333        14
+                024.Abukuma-class_frigate     1.0000    1.0000    1.0000         7
+                            025.Megayacht     1.0000    0.9444    0.9714        18
+                           026.Cargo_ship     1.0000    0.9189    0.9577        37
+             027.Murasame-class_destroyer     1.0000    0.8333    0.9091         6
+                       028.Container_ship     0.9783    1.0000    0.9890        45
+                        029.Towing_vessel     1.0000    0.9740    0.9868        77
+                          030.Civil_yacht     0.9390    1.0000    0.9686        77
+                         031.Medical_ship     1.0000    1.0000    1.0000        32
+                         032.Sand_carrier     0.9565    1.0000    0.9778        22
+                            033.Tank_ship     1.0000    1.0000    1.0000        16
+
+                                 accuracy                         0.9545       747
+                                macro avg     0.9592    0.9622    0.9588       747
+                             weighted avg     0.9568    0.9545    0.9546       747
+
+
+Summary metrics:
+macro_f1=0.9588
+balanced_accuracy=0.9622
+
+
+Per-class recall (TP / true_samples) and overall per-class accuracy:
+0: 001.Nimitz-class_aircraft_carrier  recall=0.9455  overall_acc=0.9960  support=55
+1: 002.KittyHawk-class_aircraft_carrier  recall=1.0000  overall_acc=1.0000  support=6
+2: 003.Midway-class_aircraft_carrier  recall=1.0000  overall_acc=1.0000  support=20
+3: 004.Kuznetsov-class_aircraft_carrier  recall=1.0000  overall_acc=1.0000  support=6
+4: 008.Ticonderoga-class_cruiser  recall=0.8500  overall_acc=0.9799  support=60
+5: 009.Arleigh_Burke-class_destroyer  recall=0.9310  overall_acc=0.9839  support=58
+6: 011.Asagiri-class_destroyer  recall=1.0000  overall_acc=0.9987  support=7
+7: 012.Kidd-class_destroyer  recall=1.0000  overall_acc=1.0000  support=6
+8: 013.Type_45_destroyer  recall=1.0000  overall_acc=1.0000  support=15
+9: 014.Wasp-class_assault_ship  recall=0.9556  overall_acc=0.9906  support=45
+10: 015.Osumi-class_landing_ship  recall=1.0000  overall_acc=1.0000  support=11
+11: 017.Lzumo-class_helicopter_destroyer  recall=1.0000  overall_acc=1.0000  support=6
+12: 018.Whitby_Island-class_dock_landing_ship  recall=0.9259  overall_acc=0.9946  support=27
+13: 019.San_Antonio-class_transport_dock  recall=0.9355  overall_acc=0.9973  support=31
+14: 020.Freedom-class_combat_ship  recall=0.8235  overall_acc=0.9946  support=17
+15: 021.Independence-class_combat_ship  recall=0.9048  overall_acc=0.9973  support=21
+16: 022.Sacramento-class_support_ship  recall=1.0000  overall_acc=0.9973  support=5
+17: 023.Crane_ship  recall=1.0000  overall_acc=0.9973  support=14
+18: 024.Abukuma-class_frigate  recall=1.0000  overall_acc=1.0000  support=7
+19: 025.Megayacht  recall=0.9444  overall_acc=0.9987  support=18
+20: 026.Cargo_ship  recall=0.9189  overall_acc=0.9960  support=37
+21: 027.Murasame-class_destroyer  recall=0.8333  overall_acc=0.9987  support=6
+22: 028.Container_ship  recall=1.0000  overall_acc=0.9987  support=45
+23: 029.Towing_vessel  recall=0.9740  overall_acc=0.9973  support=77
+24: 030.Civil_yacht  recall=1.0000  overall_acc=0.9933  support=77
+25: 031.Medical_ship  recall=1.0000  overall_acc=1.0000  support=32
+26: 032.Sand_carrier  recall=1.0000  overall_acc=0.9987  support=22
+27: 033.Tank_ship  recall=1.0000  overall_acc=1.0000  support=16

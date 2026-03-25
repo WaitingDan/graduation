@@ -5,11 +5,11 @@ python train/train_vit.py \
     --dataset_subdir dataset/ship_fine \
     --epochs 15 \
     --batch_size 32 \
-    --lr 1e-4 \
+    --lr 4e-4 \
     --weight_name vit_best.pth
 
 Notes:
-- 默认超参与其它训练脚本保持一致：epochs=30, batch_size=32, lr=1e-4。
+- 默认超参与其它训练脚本保持一致：epochs=30, batch_size=32, lr=4e-4。
 """
 
 import os
@@ -52,10 +52,10 @@ def set_seed(seed: int):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset_subdir', default='dataset/ship_fine', help='dataset subdir under project root')
-    parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=30)
-    parser.add_argument('--lr', type=float, default=2e-4, help='learning rate for fine-tuning')
+    parser.add_argument('--lr', type=float, default=4e-4, help='learning rate for fine-tuning')
     parser.add_argument('--weight_name', default='vit_best.pth', help='output weight file name under weights/')
     parser.add_argument('--seed', type=int, default=42, help='random seed for reproducibility')
     parser.add_argument('--early_stop_patience', type=int, default=10, help='early stopping patience')

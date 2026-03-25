@@ -33,10 +33,10 @@ def autocast_ctx(enabled):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset_subdir', default='dataset/ship_fine', help='dataset subdir under project root')
-    parser.add_argument('--batch_size', type=int, default=16, help='batch size tuned for ~24GB GPU')
+    parser.add_argument('--batch_size', type=int, default=32, help='batch size tuned for ~24GB GPU')
     parser.add_argument('--num_workers', type=int, default=0, help='num workers (use 0 on Windows to avoid multiprocessing issues)')
     parser.add_argument('--epochs', type=int, default=30)
-    parser.add_argument('--lr', type=float, default=2e-4)
+    parser.add_argument('--lr', type=float, default=4e-4)
     parser.add_argument('--accum_steps', type=int, default=1, help='gradient accumulation steps')
     parser.add_argument('--crop_size', type=int, default=112)
     parser.add_argument('--topk_patches', type=int, default=5)
