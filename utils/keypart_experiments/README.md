@@ -1,57 +1,98 @@
-# Key-part Occlusion Experiments
+# Key-part Occlusion Experiments（完整用法）
 
-当前说明：
-- 本实验流程默认评估模型为 `resnet` / `vgg` / `vit` / `vit_fusion`。
-- 项目当前不包含 `predict/` 与 `test_images/` 目录，建议统一走批量评估流程。
-- `train/train_vit.py` 训练的是标准 ViT；融合模型请使用 `train/train_vit_fusion.py`。
+本目录用于“关键部件遮挡鲁棒性”实验，推荐和四模型统一训练结果配套使用。
 
-## 1) 批量评估（标准模式，保存 CSV + JSON）
+## 1. 标准完整流程
 
-```bash
-python utils/keypart_experiments/run_occlusion_suite.py --dataset_subdir dataset/ship_fine --models resnet vgg vit vit_fusion --seeds 42 123 3407 --include_clean --occlusion_mode mixed --occlusion_levels light medium heavy --occlusion_p 1.0 --output_subdir outputs/keypart_experiments
-```
-
-输出：
-- outputs/keypart_experiments/summary_keypart_metrics.csv
-- outputs/keypart_experiments/summary_keypart_metrics.json
-- outputs/keypart_experiments/summary_keypart_metrics_agg.csv
-- outputs/keypart_experiments/summary_keypart_metrics_agg.json
-- outputs/keypart_experiments/runs/...
-
-## 2) 批量评估（精简模式，不保存 CSV）
+### 1.1 生成场景指标（多模型 × 多种子 × 多遮挡等级）
 
 ```bash
-python utils/keypart_experiments/run_occlusion_suite.py --dataset_subdir dataset/ship_fine --models resnet vgg vit vit_fusion --seeds 42 123 3407 --include_clean --occlusion_mode mixed --occlusion_levels light medium heavy --occlusion_p 1.0 --output_subdir outputs/keypart_experiments --no_csv
-```
-
-## 3) 导出章节草稿（CSV 不在时自动读取 JSON）
-
-```bash
-python utils/keypart_experiments/export_report.py --summary_csv outputs/keypart_experiments/summary_keypart_metrics.csv --summary_json outputs/keypart_experiments/summary_keypart_metrics.json --out_md outputs/keypart_experiments/chapter4_draft.md
-```
-
-## 4) 计算下降斜率并排序（CSV 不在时自动读取 agg JSON）
-
-```bash
-python utils/keypart_experiments/analyze_robustness_slope.py --agg_csv outputs/keypart_experiments/summary_keypart_metrics_agg.csv --agg_json outputs/keypart_experiments/summary_keypart_metrics_agg.json --occlusion_mode mixed --out_json outputs/keypart_experiments/robustness_slope_ranking.json --out_md outputs/keypart_experiments/robustness_slope_ranking.md --no_csv
+python utils/keypart_experiments/run_occlusion_suite.py --include_clean --output_subdir outputs/keypart_experiments
 ```
 
 说明：
-- slope_per_level 越接近 0（数值越大）表示下降越慢、鲁棒性越强。
-- drop_clean_to_heavy 越小表示从 clean 到 heavy 的整体退化越小。
+- 默认模型：`resnet vgg vit vit_fusion`
+- 默认种子：`42 123 3407`
+- 默认遮挡：`mixed`，等级 `light medium heavy`
 
-## 5) 可视化排序结果
+### 1.2 计算下降斜率并排序
+
+```bash
+python utils/keypart_experiments/analyze_robustness_slope.py --occlusion_mode mixed
+```
+
+### 1.3 生成可视化
 
 ```bash
 python utils/visualize_robustness_ranking.py
 ```
 
-说明：脚本会优先读取 outputs/keypart_experiments/robustness_slope_ranking.json；若不存在再读取同名 CSV。
+### 1.4 导出论文草稿（可选）
 
-## 6) 输出目录说明（避免重复存放）
+```bash
+python utils/keypart_experiments/export_report.py --out_md outputs/keypart_experiments/chapter4_draft.md
+```
 
-- `run_occlusion_suite.py` 的默认输出根目录是 `outputs/keypart_experiments`。
-- 每次评估的明细文件（`preds_*`、`report_*`、`per_class_*`、`confmat_*`）会写入：
-	- `outputs/keypart_experiments/runs/<scenario>/seed_<seed>/`
-- 因此在 keypart 实验流程中，不需要再额外把同一批模型结果重复放到 `outputs/` 根目录。
-- `outputs/` 根目录下的结果通常用于通用评估流程（如 `utils/analysis.py eval`），与 keypart 实验可并行存在但不是必须。
+---
+
+## 2. `run_occlusion_suite.py` 参数说明
+
+- `--dataset_subdir`：数据集目录。
+- `--test_split`：测试子目录名。
+- `--models`：模型列表。
+- `--seeds`：随机种子列表。
+- `--include_clean`：是否加入 clean 场景。
+- `--occlusion_mode`：遮挡模式（`block/stripe/mixed`）。
+- `--occlusion_levels`：遮挡等级（可多选）。
+- `--occlusion_p`：遮挡概率。
+- `--output_subdir`：输出根目录。
+- `--no_csv`：只输出 JSON。
+
+### 常见命令
+
+只跑 single-seed：
+
+```bash
+python utils/keypart_experiments/run_occlusion_suite.py --include_clean --seeds 42
+```
+
+只跑 heavy：
+
+```bash
+python utils/keypart_experiments/run_occlusion_suite.py --include_clean --occlusion_levels heavy
+```
+
+---
+
+## 3. `analyze_robustness_slope.py` 参数说明
+
+- `--agg_csv` / `--agg_json`：输入聚合指标。
+- `--occlusion_mode`：要分析的遮挡模式。
+- `--out_csv` / `--out_json` / `--out_md`：输出排名文件。
+- `--no_csv`：不写 CSV。
+
+说明：
+- 脚本会优先读取 `agg_csv`，若不存在再读 `agg_json`。
+- 排名依据是“随遮挡等级增加时性能下降斜率”。
+
+---
+
+## 4. 输出结构
+
+- 汇总：
+  - `summary_keypart_metrics.json`
+  - `summary_keypart_metrics_agg.json`
+- 排名：
+  - `robustness_slope_ranking.json`
+  - `robustness_slope_ranking.md`
+- 明细：
+  - `runs/<scenario>/seed_<seed>/preds_*.csv`
+  - `runs/<scenario>/seed_<seed>/report_*.txt`
+
+---
+
+## 5. 相关脚本
+
+- `export_occlusion_heatmaps.py`：导出遮挡图和热力图。
+- `export_report.py`：导出论文章节草稿。
+- `utils/visualize_robustness_ranking.py`：读取 ranking 文件并出图。

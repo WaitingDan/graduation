@@ -19,14 +19,13 @@ from utils.plot_results import plot_curve
 
 
 def create_grad_scaler(enabled):
-    if hasattr(torch, 'amp') and hasattr(torch.amp, 'GradScaler'):
-        return torch.amp.GradScaler('cuda', enabled=enabled)
+    # Use the unified torch.cuda.amp API. GradScaler accepts enabled=False
+    # so it's safe to construct on CPU without raising when AMP is disabled.
     return torch.cuda.amp.GradScaler(enabled=enabled)
 
 
 def autocast_ctx(enabled):
-    if hasattr(torch, 'amp') and hasattr(torch.amp, 'autocast'):
-        return torch.amp.autocast('cuda', enabled=enabled)
+    # Use the unified torch.cuda.amp.autocast context manager.
     return torch.cuda.amp.autocast(enabled=enabled)
 
 
@@ -37,9 +36,12 @@ def parse_args():
     parser.add_argument('--num_workers', type=int, default=0, help='num workers (use 0 on Windows to avoid multiprocessing issues)')
     parser.add_argument('--epochs', type=int, default=30)
     parser.add_argument('--lr', type=float, default=4e-4)
+    parser.add_argument('--weight_decay', type=float, default=1e-4)
+    parser.add_argument('--label_smoothing', type=float, default=0.0)
     parser.add_argument('--accum_steps', type=int, default=1, help='gradient accumulation steps')
     parser.add_argument('--crop_size', type=int, default=112)
     parser.add_argument('--topk_patches', type=int, default=5)
+    parser.add_argument('--rollout_layers', type=int, default=4, help='number of final encoder layers used for attention rollout (<=0 means all layers)')
     parser.add_argument('--dropout', type=float, default=0.2)
     parser.add_argument('--loss_w_global', type=float, default=0.3)
     parser.add_argument('--loss_w_local', type=float, default=0.3)
@@ -48,6 +50,7 @@ def parse_args():
     parser.add_argument('--no_pretrained', action='store_true', help='disable torchvision official pretrained weights')
     parser.add_argument('--weight_name', default='vit_fusion_best.pth', help='output weight file name under weights/')
     parser.add_argument('--seed', type=int, default=42, help='random seed for reproducibility')
+    parser.add_argument('--deterministic', action='store_true', help='enable deterministic cudnn mode')
     parser.add_argument('--early_stop_patience', type=int, default=10, help='early stopping patience (epochs)')
     parser.add_argument('--freeze_encoder_layers', type=int, default=0, help='number of ViT encoder layers to freeze (0=no freeze)')
     parser.add_argument('--train_occlusion_mode', choices=['none', 'block', 'stripe', 'mixed'], default='none')
@@ -56,16 +59,15 @@ def parse_args():
     return parser.parse_args()
 
 
-def set_seed(seed):
-    """Fix random seed for reproducibility (best effort)."""
+def set_seed(seed, deterministic=False):
     import random
     import numpy as np
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     random.seed(seed)
     np.random.seed(seed)
-    # Note: Full deterministic behavior requires CUBLAS_WORKSPACE_CONFIG env var
-    # For now, we keep allow_tf32=True for memory efficiency
+    torch.backends.cudnn.deterministic = bool(deterministic)
+    torch.backends.cudnn.benchmark = not bool(deterministic)
 
 
 def main():
@@ -75,7 +77,7 @@ def main():
         raise ValueError('--accum_steps must be >= 1')
     
     # Set seed for reproducibility
-    set_seed(args.seed)
+    set_seed(args.seed, deterministic=args.deterministic)
     print(f'Random seed set to: {args.seed}')
 
     device = get_device()
@@ -121,6 +123,7 @@ def main():
         crop_size=args.crop_size,
         out_size=224,
         topk_patches=args.topk_patches,
+        rollout_layers=args.rollout_layers,
         dropout=args.dropout,
     ).to(device)
     
@@ -136,8 +139,8 @@ def main():
                 param.requires_grad = False
         print(f'Froze {freeze_count} encoder layers in both branches')
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr)
+    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
     scaler = create_grad_scaler(enabled=use_amp)
 

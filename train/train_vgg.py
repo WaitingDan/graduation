@@ -35,13 +35,21 @@ from utils.common import get_device, build_default_transforms, write_class_indic
 from models.vgg_model import create_vgg
 
 
-def set_seed(seed: int):
+def create_grad_scaler(enabled):
+    return torch.cuda.amp.GradScaler(enabled=enabled)
+
+
+def autocast_ctx(enabled):
+    return torch.cuda.amp.autocast(enabled=enabled)
+
+
+def set_seed(seed: int, deterministic: bool = False):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     random.seed(seed)
     np.random.seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = bool(deterministic)
+    torch.backends.cudnn.benchmark = not bool(deterministic)
 
 
 def parse_args():
@@ -51,6 +59,12 @@ def parse_args():
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=30)
     parser.add_argument('--lr', type=float, default=4e-4, help='learning rate for fine-tuning (default: 4e-4)')
+    parser.add_argument('--weight_decay', type=float, default=1e-4)
+    parser.add_argument('--label_smoothing', type=float, default=0.0)
+    parser.add_argument('--accum_steps', type=int, default=1)
+    parser.add_argument('--no_amp', action='store_true')
+    parser.add_argument('--no_pretrained', action='store_true')
+    parser.add_argument('--deterministic', action='store_true', help='enable deterministic cudnn mode')
     parser.add_argument('--weight_name', default='vgg_best.pth', help='output weight file name under weights/')
     parser.add_argument('--seed', type=int, default=42, help='random seed for reproducibility')
     parser.add_argument('--early_stop_patience', type=int, default=10, help='early stopping patience')
@@ -63,11 +77,16 @@ def parse_args():
 def main():
     args = parse_args()
 
-    set_seed(args.seed)
+    if args.accum_steps < 1:
+        raise ValueError('--accum_steps must be >= 1')
+
+    set_seed(args.seed, deterministic=args.deterministic)
     print(f'Random seed set to: {args.seed}')
 
     device = get_device()
     print("Using device:", device)
+    use_amp = (device.type == 'cuda') and (not args.no_amp)
+    print('Use AMP:', use_amp)
 
     train_dir = os.path.join(ROOT_DIR, args.dataset_subdir, "train")
     val_dir = os.path.join(ROOT_DIR, args.dataset_subdir, "val")
@@ -85,13 +104,13 @@ def main():
                               batch_size=args.batch_size,
                               shuffle=True,
                               num_workers=args.num_workers,
-                              pin_memory=True)
+                              pin_memory=(device.type == 'cuda'))
 
     val_loader = DataLoader(val_dataset,
                             batch_size=args.batch_size,
                             shuffle=False,
                             num_workers=args.num_workers,
-                            pin_memory=True)
+                            pin_memory=(device.type == 'cuda'))
 
     class_names = train_dataset.classes
     num_classes = len(class_names)
@@ -100,13 +119,14 @@ def main():
 
     write_class_indices(class_names, os.path.join(ROOT_DIR, "class_indices.json"))
 
-    model = create_vgg(num_classes)
+    model = create_vgg(num_classes, pretrained=not args.no_pretrained)
     model = model.to(device)
 
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
 
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
+    scaler = create_grad_scaler(enabled=use_amp)
 
     epochs = args.epochs
     best_acc = 0.0
@@ -133,18 +153,24 @@ def main():
         correct = 0
         total = 0
 
-        for images, labels in train_bar:
+        optimizer.zero_grad(set_to_none=True)
+
+        for step, (images, labels) in enumerate(train_bar, start=1):
 
             images = images.to(device)
             labels = labels.to(device)
 
-            outputs = model(images)
+            with autocast_ctx(enabled=use_amp):
+                outputs = model(images)
+                loss = criterion(outputs, labels)
 
-            loss = criterion(outputs, labels)
+            loss_for_backward = loss / args.accum_steps
+            scaler.scale(loss_for_backward).backward()
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            if (step % args.accum_steps == 0) or (step == len(train_loader)):
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
 
             running_loss += loss.item()
 
@@ -171,9 +197,9 @@ def main():
                 images = images.to(device)
                 labels = labels.to(device)
 
-                outputs = model(images)
-
-                loss = criterion(outputs, labels)
+                with autocast_ctx(enabled=use_amp):
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
 
                 val_loss_sum += loss.item()
 

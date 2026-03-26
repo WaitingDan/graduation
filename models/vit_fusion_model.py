@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models import ViT_B_16_Weights, vit_b_16
+from utils.common import IMAGENET_MEAN, IMAGENET_STD
 
 
 class AttentionCrop(nn.Module):
@@ -51,7 +52,7 @@ class AttentionCrop(nn.Module):
 
 
 class ViTGlobalLocalFusion(nn.Module):
-    def __init__(self, num_classes, pretrained=False, crop_size=112, out_size=224, topk_patches=5, dropout=0.2):
+    def __init__(self, num_classes, pretrained=False, crop_size=112, out_size=224, topk_patches=5, dropout=0.2, rollout_layers=None):
         super().__init__()
 
         weights = ViT_B_16_Weights.DEFAULT if pretrained else None
@@ -71,14 +72,43 @@ class ViTGlobalLocalFusion(nn.Module):
         )
 
     def _forward_tokens(self, model, images):
-        tokens = model._process_input(images)
+        # torchvision ViT's `_process_input` expects images in [0,1] range
+        # while our training transforms normalize images using ImageNet mean/std.
+        # If images are already normalized, undo normalization before calling
+        # `_process_input` to avoid double-normalization.
+        imgs = images
+        try:
+            mean_check = float(imgs.mean().item())
+        except Exception:
+            mean_check = 0.0
+
+        if mean_check < 0.3:
+            # likely normalized (mean around ~0); unnormalize
+            mean = torch.tensor(IMAGENET_MEAN, device=imgs.device).view(1, 3, 1, 1)
+            std = torch.tensor(IMAGENET_STD, device=imgs.device).view(1, 3, 1, 1)
+            imgs = imgs * std + mean
+
+        tokens = model._process_input(imgs)
         batch_size = tokens.shape[0]
         cls_token = model.class_token.expand(batch_size, -1, -1)
         tokens = torch.cat((cls_token, tokens), dim=1)
         return model.encoder(tokens)
 
     def _extract_last_attention(self, model, images):
-        tokens = model._process_input(images)
+        # See comment in `_forward_tokens` about unnormalizing before calling
+        # `_process_input`.
+        imgs = images
+        try:
+            mean_check = float(imgs.mean().item())
+        except Exception:
+            mean_check = 0.0
+
+        if mean_check < 0.3:
+            mean = torch.tensor(IMAGENET_MEAN, device=imgs.device).view(1, 3, 1, 1)
+            std = torch.tensor(IMAGENET_STD, device=imgs.device).view(1, 3, 1, 1)
+            imgs = imgs * std + mean
+
+        tokens = model._process_input(imgs)
         batch_size = tokens.shape[0]
         cls_token = model.class_token.expand(batch_size, -1, -1)
         tokens = torch.cat((cls_token, tokens), dim=1)
@@ -128,7 +158,7 @@ class ViTGlobalLocalFusion(nn.Module):
 
 
 class ViTFusion(ViTGlobalLocalFusion):
-    def __init__(self, num_classes, pretrained=False, crop_size=112, out_size=224, topk_patches=5, dropout=0.2):
+    def __init__(self, num_classes, pretrained=False, crop_size=112, out_size=224, topk_patches=5, dropout=0.2, rollout_layers=None):
         super().__init__(
             num_classes=num_classes,
             pretrained=pretrained,
@@ -136,10 +166,11 @@ class ViTFusion(ViTGlobalLocalFusion):
             out_size=out_size,
             topk_patches=topk_patches,
             dropout=dropout,
+            rollout_layers=rollout_layers,
         )
 
 
-def create_vit_global_local(num_classes, pretrained=False, crop_size=112, out_size=224, topk_patches=5, dropout=0.2):
+def create_vit_global_local(num_classes, pretrained=False, crop_size=112, out_size=224, topk_patches=5, dropout=0.2, rollout_layers=None):
     return ViTGlobalLocalFusion(
         num_classes=num_classes,
         pretrained=pretrained,
@@ -147,5 +178,5 @@ def create_vit_global_local(num_classes, pretrained=False, crop_size=112, out_si
         out_size=out_size,
         topk_patches=topk_patches,
         dropout=dropout,
+        rollout_layers=rollout_layers,
     )
-

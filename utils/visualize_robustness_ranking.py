@@ -10,10 +10,79 @@ import csv
 import json
 import matplotlib.pyplot as plt
 from matplotlib import rcParams
+import matplotlib.font_manager as fm
+from matplotlib.ft2font import FT2Font
 import numpy as np
 
 # 设置中文字体
-rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
+def _font_supports_chinese(font_path, sample_text='中文鲁棒性'):
+    """检查字体文件是否覆盖给定中文字符。"""
+    try:
+        cmap = FT2Font(font_path).get_charmap()
+    except Exception:
+        return False
+
+    for ch in sample_text:
+        if ord(ch) not in cmap:
+            return False
+    return True
+
+
+def _find_system_chinese_font():
+    """尝试在系统字体中寻找常见的中文字体，返回 (字体名称, 字体路径) 或 None。"""
+    preferred_keywords = [
+        'noto sans cjk', 'noto serif cjk', 'source han', 'simhei',
+        'microsoft yahei', 'wenquanyi', 'wqy', 'pingfang', 'ar pl', '思源', '苹方'
+    ]
+    fallback_keywords = ['cjk', 'sc', 'tc', 'jp', 'kr', 'hei', 'song', 'fang']
+
+    candidates = []
+    for fpath in fm.findSystemFonts(fontpaths=None, fontext='ttf'):
+        if not _font_supports_chinese(fpath):
+            continue
+        try:
+            name = fm.FontProperties(fname=fpath).get_name()
+        except Exception:
+            continue
+
+        lname = name.lower()
+        for kw in preferred_keywords:
+            if kw in lname:
+                return name, fpath
+
+        for kw in fallback_keywords:
+            if kw in lname:
+                candidates.append((name, fpath))
+                break
+
+    if candidates:
+        return sorted(candidates, key=lambda item: item[0])[0]
+
+    # 兜底: 返回任意一个可显示中文的字体
+    for fpath in fm.findSystemFonts(fontpaths=None, fontext='ttf'):
+        if _font_supports_chinese(fpath):
+            try:
+                return fm.FontProperties(fname=fpath).get_name(), fpath
+            except Exception:
+                continue
+
+    return None
+
+# 优先使用系统中的中文字体，若找不到则保留默认并在运行时提示用户安装中文字体
+chinese_font_info = _find_system_chinese_font()
+if chinese_font_info:
+    chinese_font, chinese_font_path = chinese_font_info
+    try:
+        fm.fontManager.addfont(chinese_font_path)
+    except Exception:
+        pass
+    rcParams['font.family'] = [chinese_font]
+    rcParams['font.sans-serif'] = [chinese_font, 'DejaVu Sans']
+else:
+    chinese_font = None
+    rcParams['font.sans-serif'] = ['DejaVu Sans']
+    print("警告: 未检测到系统中文字体，中文可能显示为方块。请安装中文字体，例如: sudo apt install fonts-noto-cjk 或 fonts-wqy-zenhei")
+
 rcParams['axes.unicode_minus'] = False
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

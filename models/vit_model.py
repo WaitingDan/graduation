@@ -1,7 +1,7 @@
 import torch.nn as nn
 
 
-def create_vit(num_classes):
+def create_vit(num_classes, pretrained=True):
     """
     Create a ViT model using torchvision pretrained weights.
     """
@@ -9,7 +9,8 @@ def create_vit(num_classes):
     # try torchvision first
     try:
         from torchvision.models import vit_b_16, ViT_B_16_Weights
-        model = vit_b_16(weights=ViT_B_16_Weights.DEFAULT)
+        weights = ViT_B_16_Weights.DEFAULT if pretrained else None
+        model = vit_b_16(weights=weights)
     except Exception:
         raise RuntimeError('torchvision ViT model not available; please install a compatible torchvision version')
 

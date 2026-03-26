@@ -17,4 +17,6 @@ _pycache__/
 weights/
 *.jpg
 *.png
+outputs/
 dataset/
+*.csv

@@ -1,83 +1,99 @@
-# 实验命令小抄（论文复现版）
+# 实验命令清单（只写非默认参数）
 
-下面是一组用于论文复现的常用命令，直接在项目根目录运行（`/mnt/e/aircas/dht/graduation`）。只包含你最常用且非默认才需要显式写出的参数。
-
-1) 训练 ResNet（默认参数）
+在项目根目录执行：
 
 ```bash
-python train/train_resnet.py
+cd /mnt/e/aircas/dht/graduation
 ```
 
-2) 训练 VGG（默认参数）
+## 1) 训练（公平对比配置）
+
+> 下面命令仅包含**非默认参数**。默认值不重复写（如 `--batch_size 32` 不再出现）。
 
 ```bash
-python train/train_vgg.py
+python train/train_resnet.py --label_smoothing 0.1 --train_occlusion_mode mixed --train_occlusion_level medium --train_occlusion_p 0.4
+python train/train_vgg.py --label_smoothing 0.1 --train_occlusion_mode mixed --train_occlusion_level medium --train_occlusion_p 0.4
+python train/train_vit.py --label_smoothing 0.1 --train_occlusion_mode mixed --train_occlusion_level medium --train_occlusion_p 0.4
+python train/train_vit_fusion.py --label_smoothing 0.1 --loss_w_global 0.2 --loss_w_local 0.2 --loss_w_fusion 0.6 --dropout 0.3 --train_occlusion_mode mixed --train_occlusion_level medium --train_occlusion_p 0.4
 ```
 
-3) 训练 ViT（微调示例 — 减小 batch 与 lr）
+## 2) 常规评估
 
 ```bash
-python train/train_vit.py --batch_size 16 --lr 2e-4
+python utils/analysis.py eval --models resnet vgg vit vit_fusion --seed 42
 ```
 
-4) 训练 ViT-Fusion（常用示例）
+## 3) 单次重遮挡评估（快速看鲁棒性）
 
 ```bash
-python train/train_vit_fusion.py --batch_size 16 --lr 2e-4
+python utils/evaluate_models.py --models resnet vgg vit vit_fusion --eval_occlusion_mode mixed --eval_occlusion_level heavy --eval_occlusion_p 1.0 --output_subdir outputs/fair_eval_heavy --seed 42
 ```
 
-5) 单模型评估（ResNet）
+## 4) Key-part 完整流程（核心）
+
+### Step A: 跑多场景多种子评估
 
 ```bash
-python utils/analysis.py eval --models resnet
+python utils/keypart_experiments/run_occlusion_suite.py --include_clean --output_subdir outputs/keypart_experiments
 ```
 
-6) 四模型统一评估
+### Step B: 计算下降斜率并排序
 
 ```bash
-python utils/analysis.py eval --models resnet vgg vit vit_fusion
+python utils/keypart_experiments/analyze_robustness_slope.py --occlusion_mode mixed
 ```
 
-7) 评估并生成可视化（pipeline）
+### Step C: 出图
 
 ```bash
-python utils/analysis.py pipeline --models resnet vgg vit vit_fusion --visuals
+python utils/visualize_robustness_ranking.py
 ```
 
-8) 关键部件遮挡鲁棒性实验（包括 clean）
-
-```bash
-python utils/keypart_experiments/run_occlusion_suite.py --include_clean
-```
-
-9) 导出论文用遮挡 + 热力图（单张图示例）
-
-```bash
-python utils/keypart_experiments/export_occlusion_heatmaps.py --images dataset/ship_fine/test/001.Nimitz-class_aircraft_carrier/P0031.bmp --models resnet vgg vit vit_fusion --include_clean --occlusion_mode mixed --occlusion_levels light medium heavy --out_dir outputs/keypart_experiments/occlusion_heatmaps --seed 42
-```
-
-10) 计算性能下降斜率并排序
-
-```bash
-python utils/keypart_experiments/analyze_robustness_slope.py
-```
-
-11) 导出论文章节草稿（从实验汇总生成 Markdown）
+### Step D: 导出论文草稿（可选）
 
 ```bash
 python utils/keypart_experiments/export_report.py --out_md outputs/keypart_experiments/chapter4_draft.md
 ```
 
-12) 批量从 preds CSV 生成 Grad-CAM 可视化（示例）
+## 5) 关键脚本参数含义（你关心的）
 
-```bash
-python utils/gradcam_cnn_models.py --csv outputs/preds_resnet.csv --model resnet --max_samples 20
-```
+### 训练常用参数
 
-13) ViT attention rollout（单张图）
+- `--lr`：学习率（Learning Rate），控制每次参数更新步长。
+- `--weight_decay`：权重衰减（L2 正则），抑制过拟合。
+- `--label_smoothing`：标签平滑系数，降低过度自信。
+- `--accum_steps`：梯度累积步数，用于等效增大 batch（省显存）。
+- `--train_occlusion_mode`：训练遮挡类型（`none/block/stripe/mixed`）。
+- `--train_occlusion_level`：遮挡强度（`light/medium/heavy`）。
+- `--train_occlusion_p`：训练样本应用遮挡的概率（0~1）。
 
-```bash
-python utils/vit_attention_rollout.py --image path/to/image.jpg --weights weights/vit_best.pth
-```
+### `run_occlusion_suite.py` 常用参数
 
-说明：如果你希望一个更短的 "最终论文命令集"（只保留最终 8-12 条真正用于结果的命令），告诉我我会生成一份只包含你要提交到论文的命令清单。
+- `--include_clean`：是否加入 clean 场景。
+- `--models`：参与评估模型列表。
+- `--seeds`：多随机种子列表（用于均值/方差统计）。
+- `--occlusion_mode`：遮挡模式（默认 `mixed`）。
+- `--occlusion_levels`：遮挡等级列表（默认 `light medium heavy`）。
+- `--occlusion_p`：评估时遮挡概率（默认 1.0）。
+- `--output_subdir`：结果输出根目录。
+- `--no_csv`：不写 CSV，仅写 JSON。
+
+### `analyze_robustness_slope.py` 常用参数
+
+- `--agg_csv` / `--agg_json`：输入聚合文件（默认读取 `outputs/keypart_experiments/summary_keypart_metrics_agg.*`）。
+- `--occlusion_mode`：指定按哪种遮挡模式计算斜率。
+- `--out_csv` / `--out_json` / `--out_md`：输出排名文件路径。
+- `--no_csv`：不输出 CSV。
+
+## 6) 结果文件位置
+
+- `run_occlusion_suite.py` 输出：
+  - `outputs/keypart_experiments/summary_keypart_metrics.json`
+  - `outputs/keypart_experiments/summary_keypart_metrics_agg.json`
+  - 以及 `runs/<scenario>/seed_<seed>/` 下的明细报告
+- `analyze_robustness_slope.py` 输出：
+  - `outputs/keypart_experiments/robustness_slope_ranking.json`
+  - `outputs/keypart_experiments/robustness_slope_ranking.md`
+- `visualize_robustness_ranking.py` 输出：
+  - `outputs/keypart_experiments/robustness_ranking_visualization.png`
+  - `outputs/keypart_experiments/robustness_composite_ranking.png`
