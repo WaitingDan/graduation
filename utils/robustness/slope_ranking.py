@@ -2,16 +2,42 @@ import argparse
 import csv
 import json
 import os
+import sys
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+
+
+def get_robustness_layout(output_subdir=None, experiment_name='keypart_experiments'):
+    root = output_subdir or os.path.join('outputs', 'robustness', experiment_name)
+    return {
+        'root': root,
+        'runs': os.path.join(root, 'runs'),
+        'metrics': os.path.join(root, 'metrics'),
+        'ranking': os.path.join(root, 'ranking'),
+        'plots': os.path.join(root, 'plots'),
+        'reports': os.path.join(root, 'reports'),
+        'visuals': os.path.join(root, 'visuals'),
+    }
+
+
+def ensure_layout_dirs(root_dir, layout):
+    for rel in layout.values():
+        os.makedirs(os.path.join(root_dir, rel), exist_ok=True)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Compute robustness degradation slope and ranking for models')
-    parser.add_argument('--agg_csv', default='outputs/keypart_experiments/summary_keypart_metrics_agg.csv')
-    parser.add_argument('--agg_json', default='outputs/keypart_experiments/summary_keypart_metrics_agg.json')
+    parser.add_argument('--output_subdir', default=None, help='optional custom output root')
+    parser.add_argument('--experiment_name', default='keypart_experiments', help='used when output_subdir is not provided')
+    parser.add_argument('--agg_csv', default=None)
+    parser.add_argument('--agg_json', default=None)
     parser.add_argument('--occlusion_mode', default='mixed', choices=['block', 'stripe', 'mixed'])
-    parser.add_argument('--out_csv', default='outputs/keypart_experiments/robustness_slope_ranking.csv')
-    parser.add_argument('--out_json', default='outputs/keypart_experiments/robustness_slope_ranking.json')
-    parser.add_argument('--out_md', default='outputs/keypart_experiments/robustness_slope_ranking.md')
+    parser.add_argument('--out_csv', default=None)
+    parser.add_argument('--out_json', default=None)
+    parser.add_argument('--out_md', default=None)
     parser.add_argument('--no_csv', action='store_true', help='do not save ranking csv file')
     return parser.parse_args()
 
@@ -139,9 +165,9 @@ def write_json(path, rows):
 def write_md(path, rows):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     lines = []
-    lines.append('# 鲁棒性下降斜率排序')
+    lines.append('# Robustness slope ranking')
     lines.append('')
-    lines.append('| 排名 | 模型 | macro-F1 斜率/级 | bal-acc 斜率/级 | macro-F1(clean→heavy下降) | bal-acc(clean→heavy下降) |')
+    lines.append('| Rank | Model | macro-F1 slope/level | bal-acc slope/level | macro-F1(clean->heavy drop) | bal-acc(clean->heavy drop) |')
     lines.append('|---:|---|---:|---:|---:|---:|')
 
     for row in rows:
@@ -150,7 +176,7 @@ def write_md(path, rows):
         )
 
     lines.append('')
-    lines.append('说明：斜率越大（越接近0，下降越慢）代表鲁棒性越强。')
+    lines.append('Note: larger slope value (closer to 0) indicates slower degradation and better robustness.')
 
     with open(path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
@@ -159,28 +185,38 @@ def write_md(path, rows):
 def main():
     args = parse_args()
 
-    if os.path.exists(args.agg_csv):
-        rows = read_csv(args.agg_csv)
-        print('Loaded aggregated metrics from csv:', args.agg_csv)
-    elif os.path.exists(args.agg_json):
-        rows = read_json(args.agg_json)
-        print('Loaded aggregated metrics from json:', args.agg_json)
+    layout = get_robustness_layout(output_subdir=args.output_subdir, experiment_name=args.experiment_name)
+    ensure_layout_dirs(ROOT_DIR, layout)
+
+    agg_csv = args.agg_csv or os.path.join(ROOT_DIR, layout['metrics'], 'summary_keypart_metrics_agg.csv')
+    agg_json = args.agg_json or os.path.join(ROOT_DIR, layout['metrics'], 'summary_keypart_metrics_agg.json')
+
+    out_csv = args.out_csv or os.path.join(ROOT_DIR, layout['ranking'], 'robustness_slope_ranking.csv')
+    out_json = args.out_json or os.path.join(ROOT_DIR, layout['ranking'], 'robustness_slope_ranking.json')
+    out_md = args.out_md or os.path.join(ROOT_DIR, layout['ranking'], 'robustness_slope_ranking.md')
+
+    if os.path.exists(agg_csv):
+        rows = read_csv(agg_csv)
+        print('Loaded aggregated metrics from csv:', agg_csv)
+    elif os.path.exists(agg_json):
+        rows = read_json(agg_json)
+        print('Loaded aggregated metrics from json:', agg_json)
     else:
         raise FileNotFoundError(
-            f'Neither agg csv nor agg json found. Checked: {args.agg_csv} and {args.agg_json}'
+            f'Neither agg csv nor agg json found. Checked: {agg_csv} and {agg_json}'
         )
 
     ranking = build_model_ranking(rows, args.occlusion_mode)
 
     if not args.no_csv:
-        write_csv(args.out_csv, ranking)
-    write_json(args.out_json, ranking)
-    write_md(args.out_md, ranking)
+        write_csv(out_csv, ranking)
+    write_json(out_json, ranking)
+    write_md(out_md, ranking)
 
     if not args.no_csv:
-        print('Saved slope ranking csv to', args.out_csv)
-    print('Saved slope ranking json to', args.out_json)
-    print('Saved slope ranking markdown to', args.out_md)
+        print('Saved slope ranking csv to', out_csv)
+    print('Saved slope ranking json to', out_json)
+    print('Saved slope ranking markdown to', out_md)
 
 
 if __name__ == '__main__':

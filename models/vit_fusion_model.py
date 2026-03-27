@@ -1,182 +1,293 @@
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models import ViT_B_16_Weights, vit_b_16
-from utils.common import IMAGENET_MEAN, IMAGENET_STD
+from models.vit_model import create_vit
 
 
-class AttentionCrop(nn.Module):
-    def __init__(self, crop_size=112, out_size=224, topk_patches=5):
+class MultiPartAttentionSoftMask:
+    def __init__(self, topk=2, patch_size=16):
+        self.topk = int(topk)
+        self.patch_size = int(patch_size)
+
+    def __call__(self, images, attn_map):
+        bsz, _, height, width = images.shape
+        grid_h = max(1, height // self.patch_size)
+        grid_w = max(1, width // self.patch_size)
+        total_grid = max(1, grid_h * grid_w)
+        topk = max(1, min(self.topk, attn_map.shape[1]))
+
+        local_views = []
+        attn_map = torch.softmax(attn_map, dim=-1)
+
+        for b in range(bsz):
+            attn = attn_map[b]
+            topk_vals, topk_idx = torch.topk(attn, topk)
+
+            part_views = []
+            for score, idx in zip(topk_vals, topk_idx):
+                idx_int = int(idx.item()) % total_grid
+                row = idx_int // grid_w
+                col = idx_int % grid_w
+
+                patch_mask = torch.zeros((1, 1, grid_h, grid_w), device=images.device, dtype=images.dtype)
+                patch_mask[0, 0, row, col] = 1.0
+                soft_mask = F.interpolate(patch_mask, size=(height, width), mode='bilinear', align_corners=False)
+                soft_mask = soft_mask / soft_mask.amax(dim=(-2, -1), keepdim=True).clamp_min(1e-6)
+
+                # Keep a small amount of global context to avoid information collapse.
+                weighted = images[b : b + 1] * (0.2 + 0.8 * soft_mask * score)
+                part_views.append(weighted)
+
+            local_views.append(torch.cat(part_views, dim=0))
+
+        return torch.stack(local_views, dim=0)
+
+
+class CrossAttentionFusion(nn.Module):
+    def __init__(self, dim, num_heads=4):
         super().__init__()
-        self.crop_size = int(crop_size)
-        self.out_size = int(out_size)
-        self.topk_patches = int(topk_patches)
+        self.attn = nn.MultiheadAttention(dim, num_heads=num_heads, batch_first=True)
+        self.norm = nn.LayerNorm(dim)
 
-    def forward(self, images, patch_attention):
-        batch_size, _, height, width = images.shape
-        patch_count = patch_attention.shape[1]
-        patch_grid = int(math.sqrt(patch_count))
+    def forward(self, global_feat, local_feat):
+        query = global_feat.unsqueeze(1)
+        key = local_feat
+        value = local_feat
 
-        if patch_grid * patch_grid != patch_count:
-            raise ValueError(f"Invalid patch attention shape: {patch_attention.shape}")
-
-        crops = []
-        for index in range(batch_size):
-            attn_vec = patch_attention[index]
-            keep = min(max(1, self.topk_patches), attn_vec.numel())
-
-            topk_index = torch.topk(attn_vec, k=keep, dim=0).indices
-            ys = topk_index // patch_grid
-            xs = topk_index % patch_grid
-
-            center_y = ((ys.float() + 0.5) / patch_grid * height).mean().item()
-            center_x = ((xs.float() + 0.5) / patch_grid * width).mean().item()
-
-            y1 = int(max(0, min(height - 1, center_y - self.crop_size / 2)))
-            x1 = int(max(0, min(width - 1, center_x - self.crop_size / 2)))
-            y2 = min(height, y1 + self.crop_size)
-            x2 = min(width, x1 + self.crop_size)
-
-            if y2 <= y1:
-                y2 = min(height, y1 + 1)
-            if x2 <= x1:
-                x2 = min(width, x1 + 1)
-
-            crop = images[index:index + 1, :, y1:y2, x1:x2]
-            crop = F.interpolate(crop, size=(self.out_size, self.out_size), mode='bilinear', align_corners=False)
-            crops.append(crop)
-
-        return torch.cat(crops, dim=0)
+        out, _ = self.attn(query, key, value)
+        out = self.norm(out + query)
+        return out.squeeze(1)
 
 
-class ViTGlobalLocalFusion(nn.Module):
-    def __init__(self, num_classes, pretrained=False, crop_size=112, out_size=224, topk_patches=5, dropout=0.2, rollout_layers=None):
-        super().__init__()
+def get_feature_dim(model):
+    if hasattr(model, 'num_features'):
+        return int(model.num_features)
+    if hasattr(model, 'head') and hasattr(model.head, 'in_features'):
+        return int(model.head.in_features)
+    if hasattr(model, 'heads') and hasattr(model.heads, 'head') and hasattr(model.heads.head, 'in_features'):
+        return int(model.heads.head.in_features)
+    if hasattr(model, 'classifier') and hasattr(model.classifier, 'in_features'):
+        return int(model.classifier.in_features)
+    for _, m in model.named_modules():
+        if isinstance(m, nn.Linear):
+            return int(m.in_features)
+    raise RuntimeError('Failed to determine feature dimension for model')
 
-        weights = ViT_B_16_Weights.DEFAULT if pretrained else None
-        self.global_model = vit_b_16(weights=weights)
-        self.local_model = vit_b_16(weights=weights)
 
-        self.feature_dim = self.global_model.heads.head.in_features
-        self.global_model.heads.head = nn.Identity()
-        self.local_model.heads.head = nn.Identity()
+def set_feature_extractor_head(model):
+    if hasattr(model, 'head') and isinstance(model.head, nn.Module):
+        model.head = nn.Identity()
+        return
+    if hasattr(model, 'heads') and hasattr(model.heads, 'head'):
+        model.heads.head = nn.Identity()
+        return
+    if hasattr(model, 'classifier') and isinstance(model.classifier, nn.Module):
+        model.classifier = nn.Identity()
+        return
 
-        self.cropper = AttentionCrop(crop_size=crop_size, out_size=out_size, topk_patches=topk_patches)
-        self.global_head = nn.Linear(self.feature_dim, num_classes)
-        self.local_head = nn.Linear(self.feature_dim, num_classes)
-        self.classifier = nn.Sequential(
-            nn.Dropout(p=dropout),
-            nn.Linear(self.feature_dim * 2, num_classes),
-        )
 
-    def _forward_tokens(self, model, images):
-        # torchvision ViT's `_process_input` expects images in [0,1] range
-        # while our training transforms normalize images using ImageNet mean/std.
-        # If images are already normalized, undo normalization before calling
-        # `_process_input` to avoid double-normalization.
-        imgs = images
-        try:
-            mean_check = float(imgs.mean().item())
-        except Exception:
-            mean_check = 0.0
-
-        if mean_check < 0.3:
-            # likely normalized (mean around ~0); unnormalize
-            mean = torch.tensor(IMAGENET_MEAN, device=imgs.device).view(1, 3, 1, 1)
-            std = torch.tensor(IMAGENET_STD, device=imgs.device).view(1, 3, 1, 1)
-            imgs = imgs * std + mean
-
-        tokens = model._process_input(imgs)
+def get_attention_map(model, x, rollout_layers=None):
+    # Try torchvision-style encoder rollout if available
+    if hasattr(model, 'encoder') and hasattr(model, '_process_input'):
+        tokens = model._process_input(x)
         batch_size = tokens.shape[0]
-        cls_token = model.class_token.expand(batch_size, -1, -1)
-        tokens = torch.cat((cls_token, tokens), dim=1)
-        return model.encoder(tokens)
-
-    def _extract_last_attention(self, model, images):
-        # See comment in `_forward_tokens` about unnormalizing before calling
-        # `_process_input`.
-        imgs = images
-        try:
-            mean_check = float(imgs.mean().item())
-        except Exception:
-            mean_check = 0.0
-
-        if mean_check < 0.3:
-            mean = torch.tensor(IMAGENET_MEAN, device=imgs.device).view(1, 3, 1, 1)
-            std = torch.tensor(IMAGENET_STD, device=imgs.device).view(1, 3, 1, 1)
-            imgs = imgs * std + mean
-
-        tokens = model._process_input(imgs)
-        batch_size = tokens.shape[0]
-        cls_token = model.class_token.expand(batch_size, -1, -1)
-        tokens = torch.cat((cls_token, tokens), dim=1)
-
         encoder = model.encoder
         tokens = encoder.dropout(tokens)
 
-        layers = list(encoder.layers)
-        for layer in layers[:-1]:
+        all_layers = list(encoder.layers)
+        if rollout_layers is None or int(getattr(rollout_layers, '')) == 0:
+            selected_start = 0
+        else:
+            selected_start = max(0, len(all_layers) - int(rollout_layers))
+
+        attentions = []
+        for layer_index, layer in enumerate(all_layers):
+            norm_tokens = layer.ln_1(tokens)
+            attn_module = getattr(layer, 'self_attention', None) or getattr(layer, 'attention', None)
+            if attn_module is None:
+                tokens = layer(tokens)
+                continue
+
+            try:
+                qkv = F.linear(norm_tokens, attn_module.in_proj_weight, attn_module.in_proj_bias)
+                q, k, _ = qkv.chunk(3, dim=-1)
+                head_dim = attn_module.head_dim
+                num_heads = attn_module.num_heads
+                scale = 1.0 / (head_dim ** 0.5)
+
+                q = q.view(batch_size, q.shape[1], num_heads, head_dim).permute(0, 2, 1, 3)
+                k = k.view(batch_size, k.shape[1], num_heads, head_dim).permute(0, 2, 1, 3)
+                attn_score = torch.matmul(q, k.transpose(-2, -1)) * scale
+                attn_prob = torch.softmax(attn_score, dim=-1)
+            except Exception:
+                tokens = layer(tokens)
+                continue
+
+            if layer_index >= selected_start:
+                attentions.append(attn_prob)
+
             tokens = layer(tokens)
 
-        last_layer = layers[-1]
-        norm_tokens = last_layer.ln_1(tokens)
+        if not attentions:
+            raise RuntimeError('No attention layers available for rollout.')
 
-        attn_module = last_layer.self_attention
-        qkv = F.linear(norm_tokens, attn_module.in_proj_weight, attn_module.in_proj_bias)
+        token_count = attentions[0].size(-1)
+        eye = torch.eye(token_count, device=x.device).unsqueeze(0)
+        rollout = eye.expand(batch_size, token_count, token_count)
+        for attn in attentions:
+            attn_mean = attn.mean(dim=1)
+            attn_mean = attn_mean + eye
+            attn_mean = attn_mean / attn_mean.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+            rollout = torch.matmul(attn_mean, rollout)
 
-        q, k, _ = qkv.chunk(3, dim=-1)
-        head_dim = attn_module.head_dim
-        num_heads = attn_module.num_heads
-        scale = 1.0 / math.sqrt(head_dim)
-
-        q = q.view(batch_size, q.shape[1], num_heads, head_dim).permute(0, 2, 1, 3)
-        k = k.view(batch_size, k.shape[1], num_heads, head_dim).permute(0, 2, 1, 3)
-
-        attn_score = torch.matmul(q, k.transpose(-2, -1)) * scale
-        attn_prob = torch.softmax(attn_score, dim=-1)
-
-        cls_to_patch = attn_prob[:, :, 0, 1:].mean(dim=1)
+        cls_to_patch = rollout[:, 0, 1:]
         return cls_to_patch
 
-    def forward(self, images):
-        global_tokens = self._forward_tokens(self.global_model, images)
-        global_feature = global_tokens[:, 0]
-        global_logits = self.global_head(global_feature)
+    # Fallback: try timm-style blocks hook
+    if hasattr(model, 'blocks') and model.blocks:
+        captured = []
 
-        patch_attention = self._extract_last_attention(self.global_model, images)
-        local_images = self.cropper(images, patch_attention.detach())
+        def hook(_module, _inputs, output):
+            captured.append(output)
 
-        local_tokens = self._forward_tokens(self.local_model, local_images)
-        local_feature = local_tokens[:, 0]
-        local_logits = self.local_head(local_feature)
+        handle = model.blocks[-1].attn.attn_drop.register_forward_hook(hook)
+        was_training = model.training
+        try:
+            model.eval()
+            with torch.no_grad():
+                _ = model(x)
+        finally:
+            handle.remove()
+            if was_training:
+                model.train()
 
-        fused_feature = torch.cat([global_feature, local_feature], dim=1)
-        fusion_logits = self.classifier(fused_feature)
-        return global_logits, local_logits, fusion_logits
+        if not captured:
+            raise RuntimeError('Failed to capture attention map from global model.')
+
+        attn = captured[0]
+        if attn.dim() == 4:
+            attn_map = attn.mean(dim=1)[:, 0, 1:]
+        elif attn.dim() == 3:
+            if attn.shape[1] == attn.shape[2]:
+                attn_map = attn[:, 0, 1:]
+            else:
+                attn_map = attn[:, 1:]
+        else:
+            raise RuntimeError(f'Unexpected attention shape: {tuple(attn.shape)}')
+
+        return attn_map
+
+    raise RuntimeError('Model type not supported for attention extraction')
 
 
-class ViTFusion(ViTGlobalLocalFusion):
-    def __init__(self, num_classes, pretrained=False, crop_size=112, out_size=224, topk_patches=5, dropout=0.2, rollout_layers=None):
+class ViTFusionModel(nn.Module):
+    def __init__(
+        self,
+        num_classes=10,
+        topk=2,
+        pretrained=True,
+        patch_size=16,
+        use_local_branch=True,
+        use_attention_guidance=True,
+        use_cross_attention=True,
+        local_gate_init=1.0,
+    ):
+        super().__init__()
+
+        self.use_local_branch = bool(use_local_branch)
+        self.use_attention_guidance = bool(use_attention_guidance)
+        self.use_cross_attention = bool(use_cross_attention)
+
+        self.global_model = create_vit(num_classes=num_classes, pretrained=pretrained)
+        set_feature_extractor_head(self.global_model)
+
+        self.local_model = create_vit(num_classes=num_classes, pretrained=pretrained)
+        set_feature_extractor_head(self.local_model)
+
+        self.embed_dim = get_feature_dim(self.global_model)
+        self.localizer = MultiPartAttentionSoftMask(topk=topk, patch_size=patch_size)
+        self.fusion = CrossAttentionFusion(self.embed_dim)
+        self.classifier = nn.Linear(self.embed_dim, num_classes)
+        self.local_gate = nn.Parameter(torch.tensor(float(local_gate_init)))
+
+    def forward(self, x, attn_map=None):
+        if attn_map is None and self.use_local_branch and self.use_attention_guidance:
+            attn_map = get_attention_map(self.global_model, x)
+
+        global_feat = self.global_model(x)
+
+        if not self.use_local_branch:
+            fused_feat = global_feat
+            logits = self.classifier(fused_feat)
+            aux = {
+                'local_gate': torch.tensor(0.0, device=x.device, dtype=global_feat.dtype),
+                'local_branch_enabled': False,
+            }
+            return logits, global_feat, None, aux
+
+        if self.use_attention_guidance and attn_map is not None:
+            local_inputs = self.localizer(x, attn_map)
+        else:
+            local_inputs = x.unsqueeze(1).repeat(1, self.localizer.topk, 1, 1, 1)
+
+        bsz, k_parts, ch, height, width = local_inputs.shape
+        local_inputs = local_inputs.view(bsz * k_parts, ch, height, width)
+        local_feat = self.local_model(local_inputs)
+        local_feat = local_feat.view(bsz, k_parts, -1)
+
+        gate = torch.sigmoid(self.local_gate)
+        if self.use_cross_attention:
+            local_enhanced = self.fusion(global_feat, local_feat)
+        else:
+            local_enhanced = local_feat.mean(dim=1)
+
+        fused_feat = (1.0 - gate) * global_feat + gate * local_enhanced
+        out = self.classifier(fused_feat)
+        aux = {
+            'local_gate': gate,
+            'local_branch_enabled': True,
+        }
+        return out, global_feat, local_feat, aux
+
+
+# Backward-compatible aliases used by other scripts.
+class ViTFusion(ViTFusionModel):
+    def __init__(
+        self,
+        num_classes,
+        pretrained=False,
+        crop_size=112,
+        out_size=224,
+        topk_patches=2,
+        dropout=0.2,
+        rollout_layers=4,
+        attn_dropout_p=0.2,
+        local_gate_init=1.0,
+    ):
+        del crop_size, out_size, dropout, rollout_layers, attn_dropout_p
         super().__init__(
             num_classes=num_classes,
+            topk=topk_patches,
             pretrained=pretrained,
-            crop_size=crop_size,
-            out_size=out_size,
-            topk_patches=topk_patches,
-            dropout=dropout,
-            rollout_layers=rollout_layers,
+            local_gate_init=local_gate_init,
         )
 
 
-def create_vit_global_local(num_classes, pretrained=False, crop_size=112, out_size=224, topk_patches=5, dropout=0.2, rollout_layers=None):
-    return ViTGlobalLocalFusion(
+def create_vit_global_local(
+    num_classes,
+    pretrained=False,
+    crop_size=112,
+    out_size=224,
+    topk_patches=2,
+    dropout=0.2,
+    rollout_layers=4,
+    attn_dropout_p=0.2,
+    local_gate_init=1.0,
+):
+    del crop_size, out_size, dropout, rollout_layers, attn_dropout_p
+    return ViTFusionModel(
         num_classes=num_classes,
+        topk=topk_patches,
         pretrained=pretrained,
-        crop_size=crop_size,
-        out_size=out_size,
-        topk_patches=topk_patches,
-        dropout=dropout,
-        rollout_layers=rollout_layers,
+        local_gate_init=local_gate_init,
     )

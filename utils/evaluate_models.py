@@ -52,7 +52,7 @@ def run_evaluation(
     eval_occlusion_mode='none',
     eval_occlusion_level='light',
     eval_occlusion_p=0.0,
-    output_subdir='outputs',
+    output_subdir='outputs/evaluation/default_eval',
     file_suffix='',
     seed=None,
 ):
@@ -154,7 +154,12 @@ def run_evaluation(
 
                 outputs = model(images)
                 if isinstance(outputs, (tuple, list)):
-                    outputs = outputs[-1]
+                    selected = None
+                    for item in outputs:
+                        if isinstance(item, torch.Tensor) and item.ndim == 2 and item.size(1) == num_classes:
+                            selected = item
+                            break
+                    outputs = selected if selected is not None else outputs[0]
 
                 probs = torch.softmax(outputs, dim=1).cpu().numpy()
                 preds = np.argmax(probs, axis=1)
@@ -286,7 +291,7 @@ def main():
     parser.add_argument('--eval_occlusion_mode', choices=['none', 'block', 'stripe', 'mixed'], default='none')
     parser.add_argument('--eval_occlusion_level', choices=['light', 'medium', 'heavy'], default='light')
     parser.add_argument('--eval_occlusion_p', type=float, default=0.0)
-    parser.add_argument('--output_subdir', default='outputs')
+    parser.add_argument('--output_subdir', default='outputs/evaluation/default_eval')
     parser.add_argument('--file_suffix', default='')
     parser.add_argument('--seed', type=int, default=None)
     args = parser.parse_args()

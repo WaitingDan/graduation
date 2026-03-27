@@ -1,7 +1,9 @@
 import argparse
 import os
+import random
 import sys
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -13,46 +15,46 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from models.vit_fusion_model import create_vit_global_local
+from models.vit_fusion_model import ViTFusionModel, get_attention_map
 from utils.common import build_default_transforms, get_device, write_class_indices
 from utils.plot_results import plot_curve
 
 
 def create_grad_scaler(enabled):
-    # Use the unified torch.cuda.amp API. GradScaler accepts enabled=False
-    # so it's safe to construct on CPU without raising when AMP is disabled.
-    return torch.cuda.amp.GradScaler(enabled=enabled)
+    try:
+        return torch.amp.GradScaler('cuda', enabled=enabled)
+    except Exception:
+        return torch.cuda.amp.GradScaler(enabled=enabled)
 
 
 def autocast_ctx(enabled):
-    # Use the unified torch.cuda.amp.autocast context manager.
-    return torch.cuda.amp.autocast(enabled=enabled)
+    try:
+        return torch.amp.autocast('cuda', enabled=enabled)
+    except Exception:
+        return torch.cuda.amp.autocast(enabled=enabled)
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset_subdir', default='dataset/ship_fine', help='dataset subdir under project root')
-    parser.add_argument('--batch_size', type=int, default=32, help='batch size tuned for ~24GB GPU')
-    parser.add_argument('--num_workers', type=int, default=0, help='num workers (use 0 on Windows to avoid multiprocessing issues)')
+    parser.add_argument('--batch_size', type=int, default=32, help='default aligned with other models for fair comparison')
+    parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=30)
-    parser.add_argument('--lr', type=float, default=4e-4)
+    parser.add_argument('--lr_backbone', type=float, default=4e-4)
+    parser.add_argument('--lr_head', type=float, default=4e-4)
     parser.add_argument('--weight_decay', type=float, default=1e-4)
     parser.add_argument('--label_smoothing', type=float, default=0.0)
-    parser.add_argument('--accum_steps', type=int, default=1, help='gradient accumulation steps')
-    parser.add_argument('--crop_size', type=int, default=112)
-    parser.add_argument('--topk_patches', type=int, default=5)
-    parser.add_argument('--rollout_layers', type=int, default=4, help='number of final encoder layers used for attention rollout (<=0 means all layers)')
-    parser.add_argument('--dropout', type=float, default=0.2)
-    parser.add_argument('--loss_w_global', type=float, default=0.3)
-    parser.add_argument('--loss_w_local', type=float, default=0.3)
-    parser.add_argument('--loss_w_fusion', type=float, default=0.4)
+    parser.add_argument('--topk_patches', type=int, default=2, help='Top-K local crops, recommended 2')
+    parser.add_argument('--local_gate_init', type=float, default=1.0, help='initial value of adaptive local gate')
+    parser.add_argument('--ablate_local', action='store_true', help='disable local branch for ablation')
+    parser.add_argument('--ablate_attention_guidance', action='store_true', help='disable attention-guided localizer')
+    parser.add_argument('--ablate_cross_attention', action='store_true', help='disable cross-attention fusion block')
     parser.add_argument('--no_amp', action='store_true', help='disable mixed precision training')
-    parser.add_argument('--no_pretrained', action='store_true', help='disable torchvision official pretrained weights')
+    parser.add_argument('--no_pretrained', action='store_true', help='disable pretrained timm weights')
     parser.add_argument('--weight_name', default='vit_fusion_best.pth', help='output weight file name under weights/')
-    parser.add_argument('--seed', type=int, default=42, help='random seed for reproducibility')
-    parser.add_argument('--deterministic', action='store_true', help='enable deterministic cudnn mode')
-    parser.add_argument('--early_stop_patience', type=int, default=10, help='early stopping patience (epochs)')
-    parser.add_argument('--freeze_encoder_layers', type=int, default=0, help='number of ViT encoder layers to freeze (0=no freeze)')
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--deterministic', action='store_true')
+    parser.add_argument('--early_stop_patience', type=int, default=10)
     parser.add_argument('--train_occlusion_mode', choices=['none', 'block', 'stripe', 'mixed'], default='none')
     parser.add_argument('--train_occlusion_level', choices=['light', 'medium', 'heavy'], default='light')
     parser.add_argument('--train_occlusion_p', type=float, default=0.0)
@@ -60,8 +62,6 @@ def parse_args():
 
 
 def set_seed(seed, deterministic=False):
-    import random
-    import numpy as np
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     random.seed(seed)
@@ -70,19 +70,135 @@ def set_seed(seed, deterministic=False):
     torch.backends.cudnn.benchmark = not bool(deterministic)
 
 
+def dynamic_loss_weights(epoch):
+    if epoch < 10:
+        return 0.6, 0.3, 0.1
+    return 0.2, 0.2, 0.6
+
+
+def train_one_epoch(model, loader, optimizer, criterion, device, epoch, use_amp, scaler):
+    model.train()
+    total_loss = 0.0
+    total_correct = 0
+    total_count = 0
+
+    w_g, w_l, w_f = dynamic_loss_weights(epoch)
+    loop = tqdm(loader, file=sys.stdout)
+    gate_running = 0.0
+    gate_count = 0
+
+    for images, labels in loop:
+        images = images.to(device)
+        labels = labels.to(device)
+
+        attn_map = None
+        if model.use_local_branch and model.use_attention_guidance:
+            with torch.no_grad():
+                attn_map = get_attention_map(model.global_model, images)
+
+        with autocast_ctx(enabled=use_amp):
+            outputs, global_feat, local_feat, aux = model(images, attn_map)
+
+            loss_f = criterion(outputs, labels)
+            logits_g = model.classifier(global_feat)
+            loss_g = criterion(logits_g, labels)
+
+            if local_feat is not None:
+                bsz, k_parts, feat_dim = local_feat.shape
+                logits_l = model.classifier(local_feat.view(bsz * k_parts, feat_dim))
+                loss_l = criterion(logits_l, labels.repeat_interleave(k_parts))
+            else:
+                loss_l = loss_f.new_zeros(())
+
+            if local_feat is not None:
+                w_g_eff, w_l_eff, w_f_eff = w_g, w_l, w_f
+            else:
+                denom = max(1e-6, (w_g + w_f))
+                w_g_eff, w_l_eff, w_f_eff = w_g / denom, 0.0, w_f / denom
+
+            loss = w_g_eff * loss_g + w_l_eff * loss_l + w_f_eff * loss_f
+
+        optimizer.zero_grad(set_to_none=True)
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        total_loss += float(loss.item())
+        preds = torch.argmax(outputs, dim=1)
+        total_correct += int((preds == labels).sum().item())
+        total_count += int(labels.size(0))
+
+        gate_val = aux.get('local_gate', None)
+        if gate_val is not None:
+            gate_running += float(gate_val.detach().mean().item())
+            gate_count += 1
+
+        loop.set_description(f'Epoch [{epoch + 1}]')
+        gate_info = gate_running / gate_count if gate_count > 0 else 0.0
+        loop.set_postfix(loss=f'{loss.item():.4f}', w=f'({w_g_eff:.1f},{w_l_eff:.1f},{w_f_eff:.1f})', gate=f'{gate_info:.3f}')
+
+    avg_loss = total_loss / max(1, len(loader))
+    avg_acc = total_correct / max(1, total_count)
+    return avg_loss, avg_acc
+
+
+def validate(model, loader, criterion, device, epoch, use_amp):
+    model.eval()
+    total_loss = 0.0
+    total_correct = 0
+    total_count = 0
+    w_g, w_l, w_f = dynamic_loss_weights(epoch)
+
+    with torch.no_grad():
+        for images, labels in tqdm(loader, file=sys.stdout):
+            images = images.to(device)
+            labels = labels.to(device)
+
+            attn_map = None
+            if model.use_local_branch and model.use_attention_guidance:
+                attn_map = get_attention_map(model.global_model, images)
+
+            with autocast_ctx(enabled=use_amp):
+                outputs, global_feat, local_feat, _aux = model(images, attn_map)
+
+                loss_f = criterion(outputs, labels)
+                logits_g = model.classifier(global_feat)
+                loss_g = criterion(logits_g, labels)
+
+                if local_feat is not None:
+                    bsz, k_parts, feat_dim = local_feat.shape
+                    logits_l = model.classifier(local_feat.view(bsz * k_parts, feat_dim))
+                    loss_l = criterion(logits_l, labels.repeat_interleave(k_parts))
+                else:
+                    loss_l = loss_f.new_zeros(())
+
+                if local_feat is not None:
+                    w_g_eff, w_l_eff, w_f_eff = w_g, w_l, w_f
+                else:
+                    denom = max(1e-6, (w_g + w_f))
+                    w_g_eff, w_l_eff, w_f_eff = w_g / denom, 0.0, w_f / denom
+
+                loss = w_g_eff * loss_g + w_l_eff * loss_l + w_f_eff * loss_f
+
+            total_loss += float(loss.item())
+            preds = torch.argmax(outputs, dim=1)
+            total_correct += int((preds == labels).sum().item())
+            total_count += int(labels.size(0))
+
+    avg_loss = total_loss / max(1, len(loader))
+    avg_acc = total_correct / max(1, total_count)
+    return avg_loss, avg_acc
+
+
 def main():
     args = parse_args()
-
-    if args.accum_steps < 1:
-        raise ValueError('--accum_steps must be >= 1')
-    
-    # Set seed for reproducibility
     set_seed(args.seed, deterministic=args.deterministic)
-    print(f'Random seed set to: {args.seed}')
 
     device = get_device()
-    print('Using device:', device)
     use_amp = (device.type == 'cuda') and (not args.no_amp)
+
+    print(f'Random seed: {args.seed}')
+    print('Using device:', device)
     print('Use AMP:', use_amp)
 
     train_dir = os.path.join(ROOT_DIR, args.dataset_subdir, 'train')
@@ -94,6 +210,7 @@ def main():
         train_occlusion_level=args.train_occlusion_level,
         train_occlusion_p=args.train_occlusion_p,
     )
+
     train_dataset = datasets.ImageFolder(train_dir, transform['train'])
     val_dataset = datasets.ImageFolder(val_dir, transform['val'])
 
@@ -117,132 +234,54 @@ def main():
     print('Classes:', class_names)
     write_class_indices(class_names, os.path.join(ROOT_DIR, 'class_indices.json'))
 
-    model = create_vit_global_local(
+    model = ViTFusionModel(
         num_classes=num_classes,
+        topk=args.topk_patches,
         pretrained=not args.no_pretrained,
-        crop_size=args.crop_size,
-        out_size=224,
-        topk_patches=args.topk_patches,
-        rollout_layers=args.rollout_layers,
-        dropout=args.dropout,
+        use_local_branch=not args.ablate_local,
+        use_attention_guidance=not args.ablate_attention_guidance,
+        use_cross_attention=not args.ablate_cross_attention,
+        local_gate_init=args.local_gate_init,
     ).to(device)
-    
-    # Optionally freeze encoder layers to reduce memory and speed up training
-    if args.freeze_encoder_layers > 0:
-        num_total_layers = 12
-        freeze_count = min(args.freeze_encoder_layers, num_total_layers)
-        for layer in model.global_model.encoder.layers[:freeze_count]:
-            for param in layer.parameters():
-                param.requires_grad = False
-        for layer in model.local_model.encoder.layers[:freeze_count]:
-            for param in layer.parameters():
-                param.requires_grad = False
-        print(f'Froze {freeze_count} encoder layers in both branches')
 
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = optim.AdamW(
+        [
+            {'params': model.global_model.parameters(), 'lr': args.lr_backbone},
+            {'params': model.local_model.parameters(), 'lr': args.lr_backbone},
+            {'params': model.fusion.parameters(), 'lr': args.lr_head},
+            {'params': model.classifier.parameters(), 'lr': args.lr_head},
+        ],
+        weight_decay=args.weight_decay,
+    )
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
     scaler = create_grad_scaler(enabled=use_amp)
 
     best_acc = 0.0
     best_epoch = 0
     early_stop_counter = 0
-    weight_path = os.path.join(ROOT_DIR, 'weights', args.weight_name)
-    os.makedirs(os.path.dirname(weight_path), exist_ok=True)
 
     train_loss_list = []
     val_loss_list = []
     train_acc_list = []
     val_acc_list = []
 
+    weight_path = os.path.join(ROOT_DIR, 'weights', args.weight_name)
+    os.makedirs(os.path.dirname(weight_path), exist_ok=True)
+
     for epoch in range(args.epochs):
         print(f'\nEpoch {epoch + 1}/{args.epochs}')
+        train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, criterion, device, epoch, use_amp, scaler)
+        val_loss, val_acc = validate(model, val_loader, criterion, device, epoch, use_amp)
 
-        model.train()
-        running_loss = 0.0
-        running_loss_g = 0.0
-        running_loss_l = 0.0
-        running_loss_f = 0.0
-        correct = 0
-        total = 0
-
-        optimizer.zero_grad(set_to_none=True)
-
-        for step, (images, labels) in enumerate(tqdm(train_loader, file=sys.stdout), start=1):
-            images = images.to(device)
-            labels = labels.to(device)
-
-            with autocast_ctx(enabled=use_amp):
-                global_logits, local_logits, fusion_logits = model(images)
-                loss_g = criterion(global_logits, labels)
-                loss_l = criterion(local_logits, labels)
-                loss_f = criterion(fusion_logits, labels)
-
-                loss = (
-                    args.loss_w_global * loss_g
-                    + args.loss_w_local * loss_l
-                    + args.loss_w_fusion * loss_f
-                )
-
-            loss_for_backward = loss / args.accum_steps
-            scaler.scale(loss_for_backward).backward()
-
-            if (step % args.accum_steps == 0) or (step == len(train_loader)):
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad(set_to_none=True)
-
-            running_loss += loss.item()
-            running_loss_g += loss_g.item()
-            running_loss_l += loss_l.item()
-            running_loss_f += loss_f.item()
-            preds = torch.argmax(fusion_logits, dim=1)
-            total += labels.size(0)
-            correct += (preds == labels).sum().item()
-
-        train_loss = running_loss / max(1, len(train_loader))
-        train_loss_g = running_loss_g / max(1, len(train_loader))
-        train_loss_l = running_loss_l / max(1, len(train_loader))
-        train_loss_f = running_loss_f / max(1, len(train_loader))
-        train_acc = correct / max(1, total)
-
-        model.eval()
-        val_loss_sum = 0.0
-        correct = 0
-        total = 0
-
-        with torch.no_grad():
-            for images, labels in tqdm(val_loader, file=sys.stdout):
-                images = images.to(device)
-                labels = labels.to(device)
-
-                with autocast_ctx(enabled=use_amp):
-                    global_logits, local_logits, fusion_logits = model(images)
-                    loss_g = criterion(global_logits, labels)
-                    loss_l = criterion(local_logits, labels)
-                    loss_f = criterion(fusion_logits, labels)
-                    loss = (
-                        args.loss_w_global * loss_g
-                        + args.loss_w_local * loss_l
-                        + args.loss_w_fusion * loss_f
-                    )
-
-                val_loss_sum += loss.item()
-                preds = torch.argmax(fusion_logits, dim=1)
-                total += labels.size(0)
-                correct += (preds == labels).sum().item()
-
-        val_loss = val_loss_sum / max(1, len(val_loader))
-        val_acc = correct / max(1, total)
+        scheduler.step()
 
         print(f'Train Loss: {train_loss:.4f}')
-        print(f'Train Loss G/L/F: {train_loss_g:.4f} / {train_loss_l:.4f} / {train_loss_f:.4f}')
         print(f'Val Loss  : {val_loss:.4f}')
         print(f'Train Acc : {train_acc:.4f}')
         print(f'Val Acc   : {val_acc:.4f}')
-        print(f'LR: {optimizer.param_groups[0]["lr"]:.6f}')
-
-        scheduler.step()
+        print(f'Backbone LR: {optimizer.param_groups[0]["lr"]:.6f}')
+        print(f'Head LR    : {optimizer.param_groups[2]["lr"]:.6f}')
 
         if val_acc > best_acc:
             best_acc = val_acc
@@ -254,7 +293,7 @@ def main():
             early_stop_counter += 1
             print(f'Early Stop Counter: {early_stop_counter}/{args.early_stop_patience}')
             if early_stop_counter >= args.early_stop_patience:
-                print(f'\nEarly stopping triggered at epoch {epoch + 1} (Best epoch: {best_epoch + 1})')
+                print(f'Early stopping triggered at epoch {epoch + 1} (Best epoch: {best_epoch + 1})')
                 break
 
         train_loss_list.append(train_loss)

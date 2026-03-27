@@ -9,7 +9,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from utils.evaluate_models import run_evaluation
+from utils.output_layout import get_robustness_layout, ensure_layout_dirs
 
 
 ROW_FIELDS = [
@@ -36,7 +36,8 @@ def parse_args():
     parser.add_argument('--occlusion_mode', choices=['block', 'stripe', 'mixed'], default='mixed')
     parser.add_argument('--occlusion_levels', nargs='+', choices=['light', 'medium', 'heavy'], default=['light', 'medium', 'heavy'])
     parser.add_argument('--occlusion_p', type=float, default=1.0)
-    parser.add_argument('--output_subdir', default='outputs/keypart_experiments')
+    parser.add_argument('--output_subdir', default=None, help='optional custom output root')
+    parser.add_argument('--experiment_name', default='keypart_experiments', help='used when output_subdir is not provided')
     parser.add_argument('--no_csv', action='store_true', help='do not save summary/agg csv files')
     return parser.parse_args()
 
@@ -88,18 +89,21 @@ def build_row(item, scenario_name, seed, args, mode, level, occ_p, run_out_subdi
     }
 
 
-def build_output_paths(root_dir, output_subdir):
-    base = os.path.join(root_dir, output_subdir)
+def build_output_paths(root_dir, layout):
     return {
-        'summary_csv': os.path.join(base, 'summary_keypart_metrics.csv'),
-        'summary_json': os.path.join(base, 'summary_keypart_metrics.json'),
-        'agg_csv': os.path.join(base, 'summary_keypart_metrics_agg.csv'),
-        'agg_json': os.path.join(base, 'summary_keypart_metrics_agg.json'),
+        'summary_csv': os.path.join(root_dir, layout['metrics'], 'summary_keypart_metrics.csv'),
+        'summary_json': os.path.join(root_dir, layout['metrics'], 'summary_keypart_metrics.json'),
+        'agg_csv': os.path.join(root_dir, layout['metrics'], 'summary_keypart_metrics_agg.csv'),
+        'agg_json': os.path.join(root_dir, layout['metrics'], 'summary_keypart_metrics_agg.json'),
     }
 
 
 def main():
     args = parse_args()
+    from utils.evaluate_models import run_evaluation
+
+    layout = get_robustness_layout(output_subdir=args.output_subdir, experiment_name=args.experiment_name)
+    ensure_layout_dirs(ROOT_DIR, layout)
 
     rows = []
 
@@ -111,7 +115,7 @@ def main():
 
     for scenario_name, mode, level, occ_p in scenarios:
         for seed in args.seeds:
-            run_out_subdir = os.path.join(args.output_subdir, 'runs', scenario_name, f'seed_{seed}')
+            run_out_subdir = os.path.join(layout['runs'], scenario_name, f'seed_{seed}')
             metrics = run_evaluation(
                 selected_models=args.models,
                 dataset_subdir=args.dataset_subdir,
@@ -128,7 +132,7 @@ def main():
             for item in metrics:
                 rows.append(build_row(item, scenario_name, seed, args, mode, level, occ_p, run_out_subdir))
 
-    output_paths = build_output_paths(ROOT_DIR, args.output_subdir)
+    output_paths = build_output_paths(ROOT_DIR, layout)
     if not args.no_csv:
         write_csv(output_paths['summary_csv'], rows, ROW_FIELDS)
 
@@ -147,6 +151,7 @@ def main():
     if not args.no_csv:
         print('Saved aggregated csv to', output_paths['agg_csv'])
     print('Saved aggregated json to', output_paths['agg_json'])
+    print('Experiment root:', os.path.join(ROOT_DIR, layout['root']))
 
 
 if __name__ == '__main__':

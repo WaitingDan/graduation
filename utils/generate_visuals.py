@@ -65,9 +65,17 @@ def call_vit_rollout(image_path, weights=None, out_dir=None):
 
 def run_visuals(model, csv_path, n=3, out_dir=None):
     if out_dir is None:
-        out_dir = os.path.join(ROOT_DIR, 'outputs', 'visuals')
+        out_dir = os.path.join(ROOT_DIR, 'outputs', 'visualizations', 'attention', 'default_eval')
 
     os.makedirs(out_dir, exist_ok=True)
+
+    # support csv paths given relative to project root
+    if not os.path.exists(csv_path):
+        alt = os.path.join(ROOT_DIR, csv_path)
+        if os.path.exists(alt):
+            csv_path = alt
+        else:
+            raise FileNotFoundError(f"Predictions CSV not found: '{csv_path}'. Try running evaluation first or provide the full path (e.g. outputs/evaluation/default_eval/preds_vit.csv relative to project root).")
 
     rows = read_preds(csv_path)
     high_conf_correct, low_conf_incorrect, high_conf_incorrect = select_examples(rows, n=n)
@@ -134,10 +142,10 @@ def run_visuals(model, csv_path, n=3, out_dir=None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', choices=['resnet', 'vgg', 'vit'], required=True)
+    parser.add_argument('--model', choices=['resnet', 'vgg', 'vit', 'vit_fusion'], required=True)
     parser.add_argument('--csv', default=os.path.join(ROOT_DIR, 'outputs', 'preds_resnet.csv'))
     parser.add_argument('--n', type=int, default=3)
-    parser.add_argument('--out_dir', default=os.path.join(ROOT_DIR, 'outputs', 'visuals'))
+    parser.add_argument('--out_dir', default=os.path.join(ROOT_DIR, 'outputs', 'visualizations', 'attention', 'default_eval'))
     args = parser.parse_args()
 
     run_visuals(model=args.model, csv_path=args.csv, n=args.n, out_dir=args.out_dir)
