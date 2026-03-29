@@ -21,10 +21,18 @@ def get_device():
 
 
 class StripeOcclusion:
-    def __init__(self, p=0.0, level='light', fill=0.0):
+    def __init__(self, p=0.0, level='light', fill=IMAGENET_MEAN):
         self.p = float(max(0.0, min(1.0, p)))
         self.level = level
         self.fill = fill
+
+    def _fill_patch(self, tensor, y1=None, y2=None, x1=None, x2=None):
+        patch = tensor[:, y1:y2, x1:x2]
+        if isinstance(self.fill, (list, tuple)):
+            fill_vec = tensor.new_tensor(self.fill).view(-1, 1, 1)
+            patch.copy_(fill_vec.expand_as(patch))
+        else:
+            patch.fill_(float(self.fill))
 
     def __call__(self, tensor):
         if self.p <= 0 or random.random() > self.p:
@@ -36,16 +44,16 @@ class StripeOcclusion:
         if random.random() < 0.5:
             stripe_h = max(1, int(height * ratio))
             y1 = random.randint(0, max(0, height - stripe_h))
-            tensor[:, y1:y1 + stripe_h, :] = self.fill
+            self._fill_patch(tensor, y1=y1, y2=y1 + stripe_h, x1=0, x2=width)
         else:
             stripe_w = max(1, int(width * ratio))
             x1 = random.randint(0, max(0, width - stripe_w))
-            tensor[:, :, x1:x1 + stripe_w] = self.fill
+            self._fill_patch(tensor, y1=0, y2=height, x1=x1, x2=x1 + stripe_w)
         return tensor
 
 
 class MixedOcclusion:
-    def __init__(self, p=0.0, level='light', fill=0.0):
+    def __init__(self, p=0.0, level='light', fill=IMAGENET_MEAN):
         self.p = float(max(0.0, min(1.0, p)))
         self.level = level
         ratio = OCCLUSION_LEVEL_TO_RATIO.get(level, OCCLUSION_LEVEL_TO_RATIO['light'])
@@ -69,7 +77,7 @@ class MixedOcclusion:
         return self.stripe(tensor)
 
 
-def build_occlusion_transform(mode='none', level='light', p=0.0, fill=0.0):
+def build_occlusion_transform(mode='none', level='light', p=0.0, fill=IMAGENET_MEAN):
     mode = (mode or 'none').lower()
     if mode == 'none' or p <= 0:
         return None
@@ -124,7 +132,7 @@ def build_default_transforms(
         mode=train_occlusion_mode,
         level=train_occlusion_level,
         p=train_occlusion_p,
-        fill=0.0,
+        fill=IMAGENET_MEAN,
     )
     if train_occ is not None:
         train_ops.append(train_occ)
@@ -140,7 +148,7 @@ def build_default_transforms(
         mode=val_occlusion_mode,
         level=val_occlusion_level,
         p=val_occlusion_p,
-        fill=0.0,
+        fill=IMAGENET_MEAN,
     )
     if val_occ is not None:
         val_ops.append(val_occ)

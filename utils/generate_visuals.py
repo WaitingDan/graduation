@@ -100,7 +100,7 @@ def run_visuals(model, csv_path, n=3, out_dir=None):
             if model in ('resnet', 'vgg'):
                 saved = call_gradcam(img_path, model, out_dir=out_dir)
                 if saved and os.path.exists(saved):
-                    new_name = f"{tag}_{base}_t{true_idx}_p{pred_idx}_{prob:.3f}.png"
+                    new_name = f"{tag}_{model}_{base}_t{true_idx}_p{pred_idx}_{prob:.3f}.png"
                     new_path = os.path.join(out_dir, new_name)
                     try:
                         os.replace(saved, new_path)
@@ -110,7 +110,7 @@ def run_visuals(model, csv_path, n=3, out_dir=None):
             else:
                 saved = call_vit_rollout(img_path, out_dir=out_dir)
                 if saved and os.path.exists(saved):
-                    new_name = f"{tag}_{base}_t{true_idx}_p{pred_idx}_{prob:.3f}_vit.png"
+                    new_name = f"{tag}_{model}_{base}_t{true_idx}_p{pred_idx}_{prob:.3f}.png"
                     new_path = os.path.join(out_dir, new_name)
                     try:
                         os.replace(saved, new_path)

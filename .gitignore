@@ -18,6 +18,7 @@ weights/
 *.jpg
 *.png
 outputs/
-outputs_old/
+outputs-rank3/
 dataset/
 *.csv
+*.txt

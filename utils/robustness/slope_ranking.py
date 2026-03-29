@@ -9,6 +9,14 @@ if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
 
+INTENSITY_MAP = {
+    'clean': 0.0,
+    'light': 0.10,
+    'medium': 0.20,
+    'heavy': 0.35,
+}
+
+
 
 def get_robustness_layout(output_subdir=None, experiment_name='keypart_experiments'):
     root = output_subdir or os.path.join('outputs', 'robustness', experiment_name)
@@ -71,6 +79,27 @@ def linear_slope(xs, ys):
     return num / den
 
 
+def area_under_curve(xs, ys, normalize=True):
+    if len(xs) < 2:
+        return 0.0
+
+    points = sorted(zip(xs, ys), key=lambda item: item[0])
+    area = 0.0
+    for (x1, y1), (x2, y2) in zip(points[:-1], points[1:]):
+        dx = x2 - x1
+        if dx <= 0:
+            continue
+        area += 0.5 * (y1 + y2) * dx
+
+    if not normalize:
+        return area
+
+    span = points[-1][0] - points[0][0]
+    if span <= 0:
+        return 0.0
+    return area / span
+
+
 def pick_metric_by_model(rows, model, scenario, metric_key):
     for row in rows:
         if row.get('model') == model and row.get('scenario') == scenario:
@@ -80,7 +109,7 @@ def pick_metric_by_model(rows, model, scenario, metric_key):
 
 def build_model_ranking(rows, occlusion_mode):
     level_seq = ['light', 'medium', 'heavy']
-    scenarios = [f'{occlusion_mode}_{lv}' for lv in level_seq]
+    scenarios = [(f'{occlusion_mode}_{lv}', INTENSITY_MAP[lv]) for lv in level_seq]
 
     models = sorted(set(row.get('model') for row in rows if row.get('model')))
     ranking = []
@@ -95,24 +124,28 @@ def build_model_ranking(rows, occlusion_mode):
         bal_y = []
 
         if clean_macro is not None:
-            macro_x.append(0)
+            macro_x.append(INTENSITY_MAP['clean'])
             macro_y.append(clean_macro)
         if clean_bal is not None:
-            bal_x.append(0)
+            bal_x.append(INTENSITY_MAP['clean'])
             bal_y.append(clean_bal)
 
-        for i, scenario in enumerate(scenarios, start=1):
+        for scenario, intensity in scenarios:
             macro_val = pick_metric_by_model(rows, model, scenario, 'macro_f1_mean')
             bal_val = pick_metric_by_model(rows, model, scenario, 'balanced_accuracy_mean')
             if macro_val is not None:
-                macro_x.append(i)
+                macro_x.append(intensity)
                 macro_y.append(macro_val)
             if bal_val is not None:
-                bal_x.append(i)
+                bal_x.append(intensity)
                 bal_y.append(bal_val)
 
         macro_slope = linear_slope(macro_x, macro_y)
         bal_slope = linear_slope(bal_x, bal_y)
+        macro_aupc = area_under_curve(macro_x, macro_y, normalize=False)
+        bal_aupc = area_under_curve(bal_x, bal_y, normalize=False)
+        macro_aupc_norm = area_under_curve(macro_x, macro_y, normalize=True)
+        bal_aupc_norm = area_under_curve(bal_x, bal_y, normalize=True)
 
         heavy_scenario = f'{occlusion_mode}_heavy'
         heavy_macro = pick_metric_by_model(rows, model, heavy_scenario, 'macro_f1_mean')
@@ -123,14 +156,23 @@ def build_model_ranking(rows, occlusion_mode):
 
         ranking.append({
             'model': model,
+            'macro_f1_slope_per_ratio': macro_slope,
+            'balanced_accuracy_slope_per_ratio': bal_slope,
+            # Backward-compatible field names used by existing plotting scripts.
             'macro_f1_slope_per_level': macro_slope,
             'balanced_accuracy_slope_per_level': bal_slope,
+            'macro_f1_aupc': macro_aupc,
+            'balanced_accuracy_aupc': bal_aupc,
+            'macro_f1_aupc_norm': macro_aupc_norm,
+            'balanced_accuracy_aupc_norm': bal_aupc_norm,
             'macro_f1_drop_clean_to_heavy': drop_macro,
             'balanced_accuracy_drop_clean_to_heavy': drop_bal,
         })
 
     ranking.sort(
         key=lambda x: (
+            x['macro_f1_aupc_norm'],
+            x['balanced_accuracy_aupc_norm'],
             x['macro_f1_slope_per_level'],
             x['balanced_accuracy_slope_per_level']
         ),
@@ -146,7 +188,11 @@ def build_model_ranking(rows, occlusion_mode):
 def write_csv(path, rows):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fieldnames = [
-        'rank', 'model', 'macro_f1_slope_per_level', 'balanced_accuracy_slope_per_level',
+        'rank', 'model',
+        'macro_f1_slope_per_ratio', 'balanced_accuracy_slope_per_ratio',
+        'macro_f1_slope_per_level', 'balanced_accuracy_slope_per_level',
+        'macro_f1_aupc', 'balanced_accuracy_aupc',
+        'macro_f1_aupc_norm', 'balanced_accuracy_aupc_norm',
         'macro_f1_drop_clean_to_heavy', 'balanced_accuracy_drop_clean_to_heavy'
     ]
     with open(path, 'w', encoding='utf-8', newline='') as f:
@@ -165,18 +211,19 @@ def write_json(path, rows):
 def write_md(path, rows):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     lines = []
-    lines.append('# Robustness slope ranking')
+    lines.append('# Robustness ranking (physical ratio calibrated)')
     lines.append('')
-    lines.append('| Rank | Model | macro-F1 slope/level | bal-acc slope/level | macro-F1(clean->heavy drop) | bal-acc(clean->heavy drop) |')
-    lines.append('|---:|---|---:|---:|---:|---:|')
+    lines.append('| Rank | Model | macro-F1 slope/ratio | bal-acc slope/ratio | macro-F1 AUPC(norm) | bal-acc AUPC(norm) | macro-F1(clean->heavy drop) | bal-acc(clean->heavy drop) |')
+    lines.append('|---:|---|---:|---:|---:|---:|---:|---:|')
 
     for row in rows:
         lines.append(
-            f"| {row['rank']} | {row['model']} | {to_float(row['macro_f1_slope_per_level']):.6f} | {to_float(row['balanced_accuracy_slope_per_level']):.6f} | {to_float(row['macro_f1_drop_clean_to_heavy']):.6f} | {to_float(row['balanced_accuracy_drop_clean_to_heavy']):.6f} |"
+            f"| {row['rank']} | {row['model']} | {to_float(row['macro_f1_slope_per_ratio']):.6f} | {to_float(row['balanced_accuracy_slope_per_ratio']):.6f} | {to_float(row['macro_f1_aupc_norm']):.6f} | {to_float(row['balanced_accuracy_aupc_norm']):.6f} | {to_float(row['macro_f1_drop_clean_to_heavy']):.6f} | {to_float(row['balanced_accuracy_drop_clean_to_heavy']):.6f} |"
         )
 
     lines.append('')
-    lines.append('Note: larger slope value (closer to 0) indicates slower degradation and better robustness.')
+    lines.append('Note: x-axis uses physical occlusion ratios {clean:0.00, light:0.10, medium:0.20, heavy:0.35}.')
+    lines.append('Note: larger slope value (closer to 0) and larger AUPC(norm) indicate better robustness.')
 
     with open(path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
