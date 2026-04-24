@@ -2,6 +2,7 @@ import argparse
 import os
 import random
 import sys
+import json
 
 import numpy as np
 import torch
@@ -44,11 +45,14 @@ def parse_args():
     parser.add_argument('--lr_head', type=float, default=4e-4)
     parser.add_argument('--weight_decay', type=float, default=1e-4)
     parser.add_argument('--label_smoothing', type=float, default=0.0)
-    parser.add_argument('--topk_patches', type=int, default=2, help='Top-K local crops, recommended 2')
+    parser.add_argument('--topk_patches', type=int, default=3, help='Top-K local crops, recommended 3')
+    parser.add_argument('--use_local_self_attention', action='store_true', help='enable local part self-attention for ablation')
     parser.add_argument('--local_gate_init', type=float, default=1.0, help='initial value of adaptive local gate')
     parser.add_argument('--ablate_local', action='store_true', help='disable local branch for ablation')
     parser.add_argument('--ablate_attention_guidance', action='store_true', help='disable attention-guided localizer')
-    parser.add_argument('--ablate_cross_attention', action='store_true', help='disable cross-attention fusion block')
+    parser.add_argument('--use_cross_attention', action='store_true', help='enable cross-attention fusion (disabled by default).')
+    parser.add_argument('--ablate_cross_attention', action='store_true', help='force disable cross-attention fusion block (kept for backward compatibility)')
+    parser.add_argument('--share_backbone', action='store_true', help='share global and local ViT backbones')
     parser.add_argument('--no_amp', action='store_true', help='disable mixed precision training')
     parser.add_argument('--no_pretrained', action='store_true', help='disable pretrained timm weights')
     parser.add_argument('--weight_name', default='vit_fusion_best.pth', help='output weight file name under weights/')
@@ -105,8 +109,9 @@ def train_one_epoch(model, loader, optimizer, criterion, device, epoch, use_amp,
 
             if local_feat is not None:
                 bsz, k_parts, feat_dim = local_feat.shape
-                logits_l = model.classifier(local_feat.view(bsz * k_parts, feat_dim))
-                loss_l = criterion(logits_l, labels.repeat_interleave(k_parts))
+                logits_l = model.classifier(local_feat.view(bsz * k_parts, feat_dim)).view(bsz, k_parts, -1)
+                logits_l = logits_l.mean(dim=1)
+                loss_l = criterion(logits_l, labels)
             else:
                 loss_l = loss_f.new_zeros(())
 
@@ -167,8 +172,9 @@ def validate(model, loader, criterion, device, epoch, use_amp):
 
                 if local_feat is not None:
                     bsz, k_parts, feat_dim = local_feat.shape
-                    logits_l = model.classifier(local_feat.view(bsz * k_parts, feat_dim))
-                    loss_l = criterion(logits_l, labels.repeat_interleave(k_parts))
+                    logits_l = model.classifier(local_feat.view(bsz * k_parts, feat_dim)).view(bsz, k_parts, -1)
+                    logits_l = logits_l.mean(dim=1)
+                    loss_l = criterion(logits_l, labels)
                 else:
                     loss_l = loss_f.new_zeros(())
 
@@ -200,6 +206,8 @@ def main():
     print(f'Random seed: {args.seed}')
     print('Using device:', device)
     print('Use AMP:', use_amp)
+    print('Share backbone:', args.share_backbone)
+    print('Use cross attention:', args.use_cross_attention and (not args.ablate_cross_attention))
 
     train_dir = os.path.join(ROOT_DIR, args.dataset_subdir, 'train')
     val_dir = os.path.join(ROOT_DIR, args.dataset_subdir, 'val')
@@ -240,17 +248,21 @@ def main():
         pretrained=not args.no_pretrained,
         use_local_branch=not args.ablate_local,
         use_attention_guidance=not args.ablate_attention_guidance,
-        use_cross_attention=not args.ablate_cross_attention,
+        use_cross_attention=args.use_cross_attention and (not args.ablate_cross_attention),
+        use_local_self_attention=args.use_local_self_attention,
         local_gate_init=args.local_gate_init,
+        share_backbone=args.share_backbone,
     ).to(device)
+
+    backbone_params = list(model.backbone_parameters())
+    backbone_param_ids = {id(param) for param in backbone_params}
+    head_params = [param for param in model.head_parameters() if id(param) not in backbone_param_ids]
 
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     optimizer = optim.AdamW(
         [
-            {'params': model.global_model.parameters(), 'lr': args.lr_backbone},
-            {'params': model.local_model.parameters(), 'lr': args.lr_backbone},
-            {'params': model.fusion.parameters(), 'lr': args.lr_head},
-            {'params': model.classifier.parameters(), 'lr': args.lr_head},
+            {'params': backbone_params, 'lr': args.lr_backbone},
+            {'params': head_params, 'lr': args.lr_head},
         ],
         weight_decay=args.weight_decay,
     )
@@ -281,13 +293,28 @@ def main():
         print(f'Train Acc : {train_acc:.4f}')
         print(f'Val Acc   : {val_acc:.4f}')
         print(f'Backbone LR: {optimizer.param_groups[0]["lr"]:.6f}')
-        print(f'Head LR    : {optimizer.param_groups[2]["lr"]:.6f}')
+        print(f'Head LR    : {optimizer.param_groups[1]["lr"]:.6f}')
 
         if val_acc > best_acc:
             best_acc = val_acc
             best_epoch = epoch
             early_stop_counter = 0
             torch.save(model.state_dict(), weight_path)
+            # save simple metadata alongside weights so evaluation can reconstruct runtime flags
+            try:
+                meta = {
+                    'use_cross_attention': bool(args.use_cross_attention and (not args.ablate_cross_attention)),
+                    'topk_patches': int(args.topk_patches),
+                    'local_gate_init': float(args.local_gate_init),
+                    'share_backbone': bool(args.share_backbone),
+                    'use_local_self_attention': bool(args.use_local_self_attention),
+                }
+                meta_path = weight_path + '.meta.json'
+                with open(meta_path, 'w', encoding='utf-8') as mf:
+                    json.dump(meta, mf, indent=2)
+                print(f'Saved metadata to {meta_path}')
+            except Exception as e:
+                print('Failed to save metadata for weights:', e)
             print(f'Saved Best Model (Best Val Acc: {best_acc:.4f})')
         else:
             early_stop_counter += 1

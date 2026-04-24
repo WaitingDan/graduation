@@ -17,8 +17,10 @@ _pycache__/
 weights/
 *.jpg
 *.png
-outputs/
+outputs*/
 outputs-rank3/
+outputs-rank2/
 dataset/
 *.csv
 *.txt
+scripts/

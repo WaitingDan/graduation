@@ -1,9 +1,10 @@
 import argparse
 import csv
 import json
+import math
 import os
 import sys
-from statistics import mean, pstdev
+from statistics import mean, pstdev, stdev
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if ROOT_DIR not in sys.path:
@@ -20,8 +21,23 @@ ROW_FIELDS = [
 
 AGG_FIELDS = [
     'scenario', 'model', 'runs', 'macro_f1_mean', 'macro_f1_std',
-    'balanced_accuracy_mean', 'balanced_accuracy_std'
+    'macro_f1_ci95_low', 'macro_f1_ci95_high',
+    'balanced_accuracy_mean', 'balanced_accuracy_std',
+    'balanced_accuracy_ci95_low', 'balanced_accuracy_ci95_high'
 ]
+
+
+def ci95_bounds(values):
+    """Return 95% CI bounds using mean +/- 1.96 * sample_std / sqrt(n)."""
+    if not values:
+        return 0.0, 0.0
+    m = mean(values)
+    n = len(values)
+    if n <= 1:
+        return m, m
+    se = stdev(values) / math.sqrt(float(n))
+    delta = 1.96 * se
+    return m - delta, m + delta
 
 
 def parse_args():
@@ -32,12 +48,16 @@ def parse_args():
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--seeds', nargs='+', type=int, default=[42, 123, 3407])
-    parser.add_argument('--include_clean', action='store_true', help='include clean test set evaluation')
+    clean_group = parser.add_mutually_exclusive_group()
+    clean_group.add_argument('--include_clean', dest='include_clean', action='store_true', help='include clean test set evaluation (default: enabled)')
+    clean_group.add_argument('--no_include_clean', dest='include_clean', action='store_false', help='disable clean test set evaluation')
+    parser.set_defaults(include_clean=True)
     parser.add_argument('--occlusion_mode', choices=['block', 'stripe', 'mixed'], default='mixed')
     parser.add_argument('--occlusion_levels', nargs='+', choices=['light', 'medium', 'heavy'], default=['light', 'medium', 'heavy'])
     parser.add_argument('--occlusion_p', type=float, default=1.0)
     parser.add_argument('--output_subdir', default=None, help='optional custom output root')
     parser.add_argument('--experiment_name', default='keypart_experiments', help='used when output_subdir is not provided')
+    parser.add_argument('--vit_fusion_weight', default=None, help='optional explicit checkpoint path for vit_fusion during evaluation')
     parser.add_argument('--no_csv', action='store_true', help='do not save summary/agg csv files')
     return parser.parse_args()
 
@@ -52,14 +72,20 @@ def aggregate_rows(rows):
     for (scenario, model), items in grouped.items():
         macro_vals = [float(x['macro_f1']) for x in items]
         bal_vals = [float(x['balanced_accuracy']) for x in items]
+        macro_ci_low, macro_ci_high = ci95_bounds(macro_vals)
+        bal_ci_low, bal_ci_high = ci95_bounds(bal_vals)
         agg.append({
             'scenario': scenario,
             'model': model,
             'runs': len(items),
             'macro_f1_mean': mean(macro_vals),
             'macro_f1_std': pstdev(macro_vals) if len(macro_vals) > 1 else 0.0,
+            'macro_f1_ci95_low': macro_ci_low,
+            'macro_f1_ci95_high': macro_ci_high,
             'balanced_accuracy_mean': mean(bal_vals),
             'balanced_accuracy_std': pstdev(bal_vals) if len(bal_vals) > 1 else 0.0,
+            'balanced_accuracy_ci95_low': bal_ci_low,
+            'balanced_accuracy_ci95_high': bal_ci_high,
         })
     agg.sort(key=lambda x: (x['scenario'], x['model']))
     return agg
@@ -128,6 +154,7 @@ def main():
                 output_subdir=run_out_subdir,
                 file_suffix='',
                 seed=seed,
+                vit_fusion_weight=args.vit_fusion_weight,
             )
             for item in metrics:
                 rows.append(build_row(item, scenario_name, seed, args, mode, level, occ_p, run_out_subdir))

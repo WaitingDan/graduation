@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 
 
@@ -31,12 +32,46 @@ def ensure_layout_dirs(root_dir, layout):
         os.makedirs(os.path.join(root_dir, rel), exist_ok=True)
 
 
+# A more publication-friendly, colorblind-safe palette. ``vit_fusion`` uses
+# a distinct accent color and will be further highlighted in the plotting
+# code (thicker edge / full opacity) so it stands out in figures.
 MODEL_COLORS = {
-    'vit': '#1f77b4',
-    'resnet': '#ff7f0e',
-    'vit_fusion': '#2ca02c',
-    'vgg': '#d62728',
+    'vit': '#4C78A8',        # muted blue
+    'resnet': '#F58518',     # warm orange
+    'vit_fusion': '#7E2F8E', # accent purple (highlighted)
+    'vgg': '#54A24B',        # muted green
 }
+
+
+PAPER_FONT_SIZE_PT = 10.5
+
+
+def _pick_font_family(candidates, available_names):
+    for name in candidates:
+        if name in available_names:
+            return name
+    return None
+
+
+def _contains_cjk(text):
+    if not text:
+        return False
+    return re.search(r'[\u4e00-\u9fff]', str(text)) is not None
+
+
+def _apply_mixed_font_rules(fig, zh_font, en_font, size_pt=PAPER_FONT_SIZE_PT):
+    from matplotlib.font_manager import FontProperties
+    from matplotlib.text import Text
+
+    zh_prop = FontProperties(family=zh_font, size=size_pt)
+    en_prop = FontProperties(family=en_font, size=size_pt)
+
+    for obj in fig.findobj(match=lambda x: isinstance(x, Text)):
+        txt = obj.get_text()
+        if _contains_cjk(txt):
+            obj.set_fontproperties(zh_prop)
+        else:
+            obj.set_fontproperties(en_prop)
 
 
 def configure_matplotlib_cjk_font(preferred_font=None):
@@ -45,47 +80,50 @@ def configure_matplotlib_cjk_font(preferred_font=None):
     from matplotlib import font_manager
     from matplotlib.font_manager import FontProperties
 
-    if preferred_font:
-        matplotlib.rcParams['font.sans-serif'] = [preferred_font, 'DejaVu Sans']
-        matplotlib.rcParams['axes.unicode_minus'] = False
-        print('Using user-specified font:', preferred_font)
-        return preferred_font
-
-    preferred_candidates = [
-        'Noto Sans CJK SC',
-        'Noto Sans CJK JP',
-        'Noto Sans SC',
-        'Source Han Sans CN',
-        'Source Han Sans SC',
-        'WenQuanYi Zen Hei',
-        'WenQuanYi Micro Hei',
-        'Microsoft YaHei',
-        'SimHei',
-        'PingFang SC',
-        'Heiti SC',
-        'Arial Unicode MS',
-    ]
-
     available_names = {f.name for f in font_manager.fontManager.ttflist}
-    selected = None
-    for name in preferred_candidates:
-        if name in available_names:
-            selected = name
-            break
+    en_candidates = ['Times New Roman', 'Times', 'Liberation Serif', 'DejaVu Serif']
+    zh_candidates = [
+        preferred_font,
+        'SimSun',
+        'Songti SC',
+        'STSong',
+        'Noto Serif CJK SC',
+        'Noto Serif CJK JP',
+        'Noto Serif CJK TC',
+        'Noto Sans CJK SC',
+        'Source Han Serif SC',
+        'AR PL UMing CN',
+    ]
+    zh_candidates = [x for x in zh_candidates if x]
+
+    en_font = _pick_font_family(en_candidates, available_names) or 'DejaVu Serif'
+
+    if preferred_font:
+        zh_font = preferred_font
+        matplotlib.rcParams['font.family'] = [en_font]
+        matplotlib.rcParams['font.size'] = PAPER_FONT_SIZE_PT
+        matplotlib.rcParams['axes.unicode_minus'] = False
+        print('Using user-specified Chinese font:', preferred_font)
+        print('Using English/number font:', en_font)
+        return zh_font, en_font
+
+    selected = _pick_font_family(zh_candidates, available_names)
 
     # Fallback: pick any likely CJK font family by name pattern.
     if selected is None:
-        patterns = ('Noto Sans CJK', 'Source Han', 'WenQuanYi', 'YaHei', 'SimHei', 'PingFang', 'Heiti')
+        patterns = ('SimSun', 'Songti', 'STSong', 'Noto CJK', 'Source Han', 'WenQuanYi', 'YaHei', 'SimHei')
         for name in sorted(available_names):
             if any(pat in name for pat in patterns):
                 selected = name
                 break
 
     if selected is not None:
-        matplotlib.rcParams['font.sans-serif'] = [selected, 'DejaVu Sans']
+        matplotlib.rcParams['font.family'] = [en_font]
+        matplotlib.rcParams['font.size'] = PAPER_FONT_SIZE_PT
         matplotlib.rcParams['axes.unicode_minus'] = False
-        print('Using detected CJK font:', selected)
-        return selected
+        print('Using detected Chinese font:', selected)
+        print('Using English/number font:', en_font)
+        return selected, en_font
 
     # Fallback for environments where matplotlib cache misses system fonts.
     try:
@@ -101,18 +139,22 @@ def configure_matplotlib_cjk_font(preferred_font=None):
         if font_file and os.path.exists(font_file):
             font_manager.fontManager.addfont(font_file)
             loaded_name = FontProperties(fname=font_file).get_name()
-            matplotlib.rcParams['font.sans-serif'] = [loaded_name, 'DejaVu Sans']
+            matplotlib.rcParams['font.family'] = [en_font]
+            matplotlib.rcParams['font.size'] = PAPER_FONT_SIZE_PT
             matplotlib.rcParams['axes.unicode_minus'] = False
-            print('Using CJK font via fc-list:', loaded_name, 'from', font_file)
-            return loaded_name
+            print('Using Chinese font via fc-list:', loaded_name, 'from', font_file)
+            print('Using English/number font:', en_font)
+            return loaded_name, en_font
     except Exception:
         pass
 
     # Keep default if no CJK font is found; explain how to fix.
     print('Warning: no CJK font detected. Chinese labels may appear as boxes.')
-    print('Hint: install one of these fonts, e.g. Noto Sans CJK / WenQuanYi.')
+    print('Hint: install Songti/SimSun/Noto Serif CJK SC for publication Chinese labels.')
+    matplotlib.rcParams['font.family'] = [en_font]
+    matplotlib.rcParams['font.size'] = PAPER_FONT_SIZE_PT
     matplotlib.rcParams['axes.unicode_minus'] = False
-    return None
+    return None, en_font
 
 
 def load_ranking_data(csv_file):
@@ -237,29 +279,57 @@ def plot_robustness_ranking(data, output_dir):
     import numpy as np
     import matplotlib.pyplot as plt
 
-    order, sorted_models, _, _ = _sorted_by_composite(data)
+    order, sorted_models, _, details = _sorted_by_composite(data)
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle('鲁棒性指标比较', fontsize=16, fontweight='bold', y=0.98)
+    # prepare AUPC (normalized) average as an additional panel
+    f1_aupc = np.asarray(data.get('macro_f1_aupc_norm') or [0.0] * len(data['model']), dtype=float)
+    acc_aupc = np.asarray(data.get('balanced_acc_aupc_norm') or [0.0] * len(data['model']), dtype=float)
+    aupc_avg = (f1_aupc + acc_aupc) / 2.0
+
+    # create a complete 3x2 grid (6 panels)
+    fig, axes = plt.subplots(3, 2, figsize=(16, 12))
+    fig.suptitle('鲁棒性指标比较', fontsize=PAPER_FONT_SIZE_PT, fontweight='bold', y=0.985)
+
+    composite_raw = np.asarray(details['composite'])
 
     chart_items = [
         ('|macro-F1 斜率|（越小越好）', np.abs(np.asarray(data['macro_f1_slope']))),
         ('|balanced-acc 斜率|（越小越好）', np.abs(np.asarray(data['balanced_acc_slope']))),
         ('macro-F1 从 clean 到 heavy 的下降量（越小越好）', np.asarray(data['macro_f1_drop'])),
         ('balanced-acc 从 clean 到 heavy 的下降量（越小越好）', np.asarray(data['balanced_acc_drop'])),
+        ('综合鲁棒性相对指数（越大越好）', composite_raw),
+        ('AUPC(norm)（越大越好）', aupc_avg),
     ]
 
-    for ax, (title, values) in zip(axes.flatten(), chart_items):
+    flat_axes = axes.flatten()
+    for ax, (title, values) in zip(flat_axes, chart_items):
         sorted_values = values[order]
         bars = ax.barh(sorted_models, sorted_values, color=_model_colors(sorted_models), edgecolor='black', linewidth=0.8)
+        # emphasize fusion model visually: thicker edge + full opacity
+        for i, (bar, model_name) in enumerate(zip(bars, sorted_models)):
+            if model_name == 'vit_fusion':
+                bar.set_edgecolor('#222222')
+                bar.set_linewidth(1.6)
+                try:
+                    bar.set_alpha(1.0)
+                except Exception:
+                    pass
         ax.invert_yaxis()
-        ax.set_title(title, fontsize=11, fontweight='bold')
+        ax.set_title(title, fontsize=PAPER_FONT_SIZE_PT, fontweight='bold')
         ax.grid(axis='x', alpha=0.25, linestyle='--')
-        margin = (float(np.max(sorted_values)) if len(sorted_values) else 1.0) * 0.05
+        x_max = float(np.max(sorted_values)) if len(sorted_values) else 1.0
+        x_pad = max(0.03, x_max * 0.18)
+        ax.set_xlim([0.0, x_max + x_pad])
         for i, (bar, val) in enumerate(zip(bars, sorted_values)):
-            ax.text(val + margin, i, f'{val:.4f}', va='center', fontsize=9)
+            text_x = min(val + x_pad * 0.2, x_max + x_pad * 0.92)
+            ax.text(text_x, i, f'{val:.4f}', va='center', fontsize=PAPER_FONT_SIZE_PT)
 
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    zh_font = getattr(plot_robustness_ranking, 'zh_font', None)
+    en_font = getattr(plot_robustness_ranking, 'en_font', 'Times New Roman')
+    if zh_font:
+        _apply_mixed_font_rules(fig, zh_font=zh_font, en_font=en_font, size_pt=PAPER_FONT_SIZE_PT)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
 
     output_file = os.path.join(output_dir, 'robustness_ranking_visualization.png')
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
@@ -269,34 +339,83 @@ def plot_robustness_ranking(data, output_dir):
 
 def plot_robustness_summary(data, output_dir):
     import matplotlib.pyplot as plt
+    import numpy as np
 
     # default weights: aupc 0.5, slope 0.25, drop 0.25
     weights = getattr(plot_robustness_summary, 'weights', None)
-    _, sorted_models, sorted_scores, _ = _sorted_by_composite(data, weights=weights)
+    if weights is None:
+        weights = {'aupc': 0.5, 'slope': 0.25, 'drop': 0.25}
+    order, sorted_models, sorted_scores, details = _sorted_by_composite(data, weights=weights)
 
-    fig, ax = plt.subplots(figsize=(12, 7))
+    aupc_component = weights.get('aupc', 0.5) * details['aupc_score'][order]
+    slope_component = weights.get('slope', 0.25) * details['slope_score'][order]
+    drop_component = weights.get('drop', 0.25) * details['drop_score'][order]
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 7), sharey=True)
+    ax, ax_comp = axes
+
     bars = ax.barh(sorted_models, sorted_scores, color=_model_colors(sorted_models), alpha=0.9, edgecolor='black', linewidth=1.0)
+    # highlight fusion in summary plot
+    for i, (bar, model_name) in enumerate(zip(bars, sorted_models)):
+        if model_name == 'vit_fusion':
+            bar.set_edgecolor('#222222')
+            bar.set_linewidth(1.8)
+            try:
+                bar.set_alpha(1.0)
+            except Exception:
+                pass
 
-    ax.set_xlabel('综合鲁棒性得分', fontsize=12, fontweight='bold')
-    ax.set_title('综合鲁棒性排序（越大越好）', fontsize=14, fontweight='bold')
-    ax.set_xlim([0, 1.05])
+    ax.set_xlabel('相对鲁棒性指数（实验内归一化）', fontsize=PAPER_FONT_SIZE_PT, fontweight='bold')
+    ax.set_title('综合鲁棒性相对排序（越大越好）', fontsize=PAPER_FONT_SIZE_PT, fontweight='bold')
+    ax.set_xlim([0, 1.16])
     ax.invert_yaxis()
     ax.grid(axis='x', alpha=0.3, linestyle='--')
 
     for i, (bar, score) in enumerate(zip(bars, sorted_scores), start=1):
-        ax.text(score + 0.015, i - 1, f'排名 {i}: {score:.4f}', va='center', fontsize=10, fontweight='bold')
+        label = f'排名 {i}: {score:.4f}'
+        if score >= 0.30:
+            text_x = score - 0.02
+            ax.text(text_x, i - 1, label, va='center', ha='right', color='white', fontsize=PAPER_FONT_SIZE_PT, fontweight='bold')
+        else:
+            text_x = min(score + 0.02, 1.12)
+            ax.text(text_x, i - 1, label, va='center', ha='left', color='black', fontsize=PAPER_FONT_SIZE_PT, fontweight='bold')
 
-    plt.tight_layout()
+    y = np.arange(len(sorted_models))
+    ax_comp.barh(y, aupc_component, label='AUPC分量', color='#4c78a8', edgecolor='black', linewidth=0.6)
+    ax_comp.barh(y, slope_component, left=aupc_component, label='Slope分量', color='#f58518', edgecolor='black', linewidth=0.6)
+    ax_comp.barh(y, drop_component, left=aupc_component + slope_component, label='Drop分量', color='#54a24b', edgecolor='black', linewidth=0.6)
+    ax_comp.set_title('综合分构成拆解', fontsize=PAPER_FONT_SIZE_PT, fontweight='bold')
+    ax_comp.set_xlabel('加权分量和（实验内相对）', fontsize=PAPER_FONT_SIZE_PT, fontweight='bold')
+    ax_comp.set_xlim([0, 1.16])
+    ax_comp.grid(axis='x', alpha=0.3, linestyle='--')
+    ax_comp.set_yticks(y)
+    ax_comp.set_yticklabels(sorted_models)
+    ax_comp.legend(loc='lower right', fontsize=PAPER_FONT_SIZE_PT)
+
+    fig.text(
+        0.5,
+        0.01,
+        '注：该指数为实验内相对归一化结果，适合同一次实验内模型比较；不建议跨实验做绝对数值比较。',
+        ha='center',
+        fontsize=PAPER_FONT_SIZE_PT,
+    )
+
+    zh_font = getattr(plot_robustness_summary, 'zh_font', None)
+    en_font = getattr(plot_robustness_summary, 'en_font', 'Times New Roman')
+    if zh_font:
+        _apply_mixed_font_rules(fig, zh_font=zh_font, en_font=en_font, size_pt=PAPER_FONT_SIZE_PT)
+
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
 
     output_file = os.path.join(output_dir, 'robustness_composite_ranking.png')
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     print('Saved composite ranking plot to', output_file)
 
     print('\n' + '=' * 50)
-    print('综合鲁棒性排序（从最好到最差）:')
+    print('综合鲁棒性相对排序（从最好到最差）:')
     print('=' * 50)
     for i, (model, score) in enumerate(zip(sorted_models, sorted_scores), 1):
-        print(f'{i}. {model:12s} - 综合得分: {score:.4f}')
+        print(f'{i}. {model:12s} - 相对指数: {score:.4f}')
     print('=' * 50 + '\n')
 
     return output_file
@@ -330,7 +449,7 @@ def main():
     else:
         raise FileNotFoundError(f'Ranking file not found. Checked: {json_file} and {csv_file}')
 
-    configure_matplotlib_cjk_font(preferred_font=args.font_family)
+    zh_font, en_font = configure_matplotlib_cjk_font(preferred_font=args.font_family)
 
     # support optional weighting via CLI
     weights = None
@@ -345,6 +464,11 @@ def main():
     # inject weights for plotting function
     if weights is not None:
         plot_robustness_summary.weights = weights
+
+    plot_robustness_ranking.zh_font = zh_font
+    plot_robustness_ranking.en_font = en_font
+    plot_robustness_summary.zh_font = zh_font
+    plot_robustness_summary.en_font = en_font
 
     plot_robustness_ranking(data, output_dir)
     plot_robustness_summary(data, output_dir)

@@ -22,7 +22,7 @@ os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 from models.vit_model import create_vit
 from models.resnet_model import create_resnet
 from models.vgg_model import create_vgg
-from models.vit_fusion_model import create_vit_global_local
+from models.vit_fusion_model import create_vit_global_local, ViTFusionModel
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -43,6 +43,56 @@ def _pick_first_existing(*paths):
     return paths[0]
 
 
+def _resolve_weight_path(model_name, seed=None, explicit_path=None):
+    """Resolve checkpoint path with optional explicit override and seed-specific fallback."""
+    if explicit_path:
+        return explicit_path
+
+    seed_suffix = f'_{int(seed)}' if seed is not None else None
+
+    if model_name == 'resnet':
+        candidates = []
+        if seed_suffix is not None:
+            candidates.append(os.path.join(ROOT_DIR, f'weights/resnet_best{seed_suffix}.pth'))
+        candidates.extend([
+            os.path.join(ROOT_DIR, 'weights/resnet_best.pth'),
+            os.path.join(ROOT_DIR, 'weights/resnet_best_10.pth'),
+            os.path.join(ROOT_DIR, 'weights/resnet_best_42.pth'),
+        ])
+        return _pick_first_existing(*candidates)
+
+    if model_name == 'vgg':
+        candidates = []
+        if seed_suffix is not None:
+            candidates.append(os.path.join(ROOT_DIR, f'weights/vgg_best{seed_suffix}.pth'))
+        candidates.extend([
+            os.path.join(ROOT_DIR, 'weights/vgg_best.pth'),
+            os.path.join(ROOT_DIR, 'weights/vgg_best_10.pth'),
+            os.path.join(ROOT_DIR, 'weights/vgg_best_42.pth'),
+        ])
+        return _pick_first_existing(*candidates)
+
+    if model_name == 'vit':
+        candidates = []
+        if seed_suffix is not None:
+            candidates.append(os.path.join(ROOT_DIR, f'weights/vit_best{seed_suffix}.pth'))
+        candidates.extend([
+            os.path.join(ROOT_DIR, 'weights/vit_best.pth'),
+            os.path.join(ROOT_DIR, 'weights/vit_best_10.pth'),
+            os.path.join(ROOT_DIR, 'weights/vit_best_42.pth'),
+        ])
+        return _pick_first_existing(*candidates)
+
+    if model_name == 'vit_fusion':
+        candidates = []
+        if seed_suffix is not None:
+            candidates.append(os.path.join(ROOT_DIR, f'weights/vit_fusion_best{seed_suffix}.pth'))
+        candidates.append(os.path.join(ROOT_DIR, 'weights/vit_fusion_best.pth'))
+        return _pick_first_existing(*candidates)
+
+    raise ValueError(f'Unknown model for weight resolution: {model_name}')
+
+
 def run_evaluation(
     selected_models=None,
     dataset_subdir='dataset/ship_fine',
@@ -55,6 +105,7 @@ def run_evaluation(
     output_subdir='outputs/evaluation/default_eval',
     file_suffix='',
     seed=None,
+    vit_fusion_weight=None,
 ):
     set_seed(seed)
 
@@ -91,34 +142,23 @@ def run_evaluation(
 
         "vgg": {
             "model": create_vgg(num_classes),
-            "weight": _pick_first_existing(
-                os.path.join(ROOT_DIR, "weights/vgg_best.pth"),
-                os.path.join(ROOT_DIR, "weights/vgg_best_10.pth"),
-                os.path.join(ROOT_DIR, "weights/vgg_best_42.pth"),
-            )
+            "weight": _resolve_weight_path('vgg', seed=seed)
         },
 
         "resnet": {
             "model": create_resnet(num_classes),
-            "weight": _pick_first_existing(
-                os.path.join(ROOT_DIR, "weights/resnet_best.pth"),
-                os.path.join(ROOT_DIR, "weights/resnet_best_10.pth"),
-                os.path.join(ROOT_DIR, "weights/resnet_best_42.pth"),
-            )
+            "weight": _resolve_weight_path('resnet', seed=seed)
         },
 
         "vit": {
             "model": create_vit(num_classes),
-            "weight": _pick_first_existing(
-                os.path.join(ROOT_DIR, "weights/vit_best.pth"),
-                os.path.join(ROOT_DIR, "weights/vit_best_10.pth"),
-                os.path.join(ROOT_DIR, "weights/vit_best_42.pth"),
-            )
+            "weight": _resolve_weight_path('vit', seed=seed)
         },
 
         "vit_fusion": {
-            "model": create_vit_global_local(num_classes=num_classes, pretrained=False),
-            "weight": os.path.join(ROOT_DIR, "weights/vit_fusion_best.pth")
+            # instantiate vit_fusion according to saved checkpoint metadata when available
+            "model": None,
+            "weight": _resolve_weight_path('vit_fusion', seed=seed, explicit_path=vit_fusion_weight)
         }
     }
 
@@ -131,12 +171,41 @@ def run_evaluation(
         if name not in models:
             continue
 
-        model = models[name]["model"]
+        # prepare model instance for evaluation; for vit_fusion try to honor saved metadata
         weight_path = models[name]["weight"]
+        model = models[name]["model"]
+        if name == 'vit_fusion':
+            # if metadata exists next to weights, use it to set runtime flags
+            try:
+                meta_path = weight_path + '.meta.json'
+                if os.path.exists(meta_path):
+                    with open(meta_path, 'r', encoding='utf-8') as mf:
+                        meta = json.load(mf)
+                    use_cross = bool(meta.get('use_cross_attention', False))
+                    topk = int(meta.get('topk_patches', 3))
+                    local_gate_init = float(meta.get('local_gate_init', 1.0))
+                    share_backbone = bool(meta.get('share_backbone', False))
+                    use_local_self_attention = bool(meta.get('use_local_self_attention', False))
+                    model = ViTFusionModel(
+                        num_classes=num_classes,
+                        topk=topk,
+                        pretrained=False,
+                        use_local_self_attention=use_local_self_attention,
+                        local_gate_init=local_gate_init,
+                        share_backbone=share_backbone,
+                        use_cross_attention=use_cross,
+                    )
+                else:
+                    # fallback to default factory
+                    model = create_vit_global_local(num_classes=num_classes, pretrained=False)
+            except Exception:
+                model = create_vit_global_local(num_classes=num_classes, pretrained=False)
 
         if not os.path.exists(weight_path):
             print(f'Skip {name}: weight not found -> {weight_path}')
             continue
+
+        print(f'Evaluating {name} with weight: {weight_path}')
 
         model.load_state_dict(torch.load(weight_path, map_location=device))
 
@@ -294,6 +363,7 @@ def main():
     parser.add_argument('--output_subdir', default='outputs/evaluation/default_eval')
     parser.add_argument('--file_suffix', default='')
     parser.add_argument('--seed', type=int, default=None)
+    parser.add_argument('--vit_fusion_weight', default=None, help='optional explicit checkpoint path for vit_fusion')
     args = parser.parse_args()
     run_evaluation(
         selected_models=args.models,
@@ -307,6 +377,7 @@ def main():
         output_subdir=args.output_subdir,
         file_suffix=args.file_suffix,
         seed=args.seed,
+        vit_fusion_weight=args.vit_fusion_weight,
     )
 
 

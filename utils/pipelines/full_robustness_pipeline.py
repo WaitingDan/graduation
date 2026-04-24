@@ -26,7 +26,10 @@ def parse_args():
     parser.add_argument('--output_subdir', default=None, help='optional custom output root')
     parser.add_argument('--experiment_name', default='keypart_experiments', help='used when output_subdir is not provided')
     parser.add_argument('--seeds', nargs='+', type=int, default=[42, 123, 3407])
-    parser.add_argument('--include_clean', action='store_true', help='include clean scenario in suite')
+    clean_group = parser.add_mutually_exclusive_group()
+    clean_group.add_argument('--include_clean', dest='include_clean', action='store_true', help='include clean scenario in suite (default: enabled)')
+    clean_group.add_argument('--no_include_clean', dest='include_clean', action='store_false', help='disable clean scenario in suite')
+    parser.set_defaults(include_clean=True)
     parser.add_argument('--occlusion_mode', choices=['block', 'stripe', 'mixed'], default='mixed')
     parser.add_argument('--occlusion_levels', nargs='+', choices=['light', 'medium', 'heavy'], default=['light', 'medium', 'heavy'])
     parser.add_argument('--occlusion_p', type=float, default=1.0)
@@ -41,6 +44,7 @@ def parse_args():
     parser.add_argument('--train_occlusion_p', type=float, default=0.4,
                         help='probability of train-time occlusion used when --train_models is set (default: 0.4)')
     parser.add_argument('--skip_analyze', action='store_true')
+    parser.add_argument('--skip_significance', action='store_true')
     parser.add_argument('--skip_visualize', action='store_true')
     return parser.parse_args()
 
@@ -102,6 +106,14 @@ def main():
             'utils/robustness/slope_ranking.py',
             '--output_subdir', layout['root'],
             '--occlusion_mode', args.occlusion_mode,
+        ])
+
+    if (not args.skip_analyze) and (not args.skip_significance):
+        run_cmd([
+            sys.executable,
+            'utils/robustness/significance_test.py',
+            '--output_subdir', layout['root'],
+            '--experiment_name', args.experiment_name,
         ])
 
     if not args.skip_visualize:

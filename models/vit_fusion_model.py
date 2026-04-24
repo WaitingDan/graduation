@@ -5,7 +5,7 @@ from models.vit_model import create_vit
 
 
 class MultiPartAttentionSoftMask:
-    def __init__(self, topk=2, patch_size=16):
+    def __init__(self, topk=3, patch_size=16):
         self.topk = int(topk)
         self.patch_size = int(patch_size)
 
@@ -57,6 +57,39 @@ class CrossAttentionFusion(nn.Module):
         out, _ = self.attn(query, key, value)
         out = self.norm(out + query)
         return out.squeeze(1)
+
+
+class ChannelAttentionEnhance(nn.Module):
+    def __init__(self, dim, kernel_size=5):
+        super().__init__()
+        k = max(3, int(kernel_size))
+        if k % 2 == 0:
+            k += 1
+        self.conv = nn.Conv1d(1, 1, kernel_size=k, padding=k // 2, bias=False)
+        self.gate = nn.Sigmoid()
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x):
+        # x: [B, C], apply lightweight channel interaction.
+        attn = self.conv(x.unsqueeze(1)).squeeze(1)
+        attn = self.gate(attn)
+        return x * (1.0 + self.gamma * (2.0 * attn - 1.0))
+
+
+class LocalPartSelfAttention(nn.Module):
+    def __init__(self, dim, num_heads=4):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(dim, num_heads=num_heads, batch_first=True)
+        self.norm = nn.LayerNorm(dim)
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x):
+        if x.dim() != 3 or x.size(1) <= 1:
+            return x
+
+        residual = x
+        attn_out, _ = self.attn(x, x, x, need_weights=False)
+        return self.norm(residual + self.gamma * attn_out)
 
 
 def get_feature_dim(model):
@@ -184,41 +217,72 @@ class ViTFusionModel(nn.Module):
     def __init__(
         self,
         num_classes=10,
-        topk=2,
+        topk=3,
         pretrained=True,
         patch_size=16,
         use_local_branch=True,
         use_attention_guidance=True,
-        use_cross_attention=True,
+        use_cross_attention=False,
+        use_local_self_attention=False,
         local_gate_init=1.0,
+        share_backbone=False,
     ):
         super().__init__()
 
         self.use_local_branch = bool(use_local_branch)
         self.use_attention_guidance = bool(use_attention_guidance)
         self.use_cross_attention = bool(use_cross_attention)
+        self.use_local_self_attention = bool(use_local_self_attention)
+        self.share_backbone = bool(share_backbone)
+        self.local_gate_scale = 0.25
 
         self.global_model = create_vit(num_classes=num_classes, pretrained=pretrained)
         set_feature_extractor_head(self.global_model)
 
-        self.local_model = create_vit(num_classes=num_classes, pretrained=pretrained)
-        set_feature_extractor_head(self.local_model)
+        if self.share_backbone:
+            self.local_model = self.global_model
+        else:
+            self.local_model = create_vit(num_classes=num_classes, pretrained=pretrained)
+            set_feature_extractor_head(self.local_model)
 
         self.embed_dim = get_feature_dim(self.global_model)
+        self.global_channel_attn = ChannelAttentionEnhance(self.embed_dim)
         self.localizer = MultiPartAttentionSoftMask(topk=topk, patch_size=patch_size)
+        self.local_self_attn = LocalPartSelfAttention(self.embed_dim) if self.use_local_self_attention else nn.Identity()
         self.fusion = CrossAttentionFusion(self.embed_dim)
         self.classifier = nn.Linear(self.embed_dim, num_classes)
         self.local_gate = nn.Parameter(torch.tensor(float(local_gate_init)))
+
+    def backbone_parameters(self):
+        seen = set()
+        for module in (self.global_model, self.local_model):
+            if module is None:
+                continue
+            for param in module.parameters():
+                param_id = id(param)
+                if param_id in seen:
+                    continue
+                seen.add(param_id)
+                yield param
+
+    def head_parameters(self):
+        for module in (
+            self.global_channel_attn,
+            self.local_self_attn,
+            self.fusion,
+            self.classifier,
+        ):
+            yield from module.parameters()
+        yield self.local_gate
 
     def forward(self, x, attn_map=None):
         if attn_map is None and self.use_local_branch and self.use_attention_guidance:
             attn_map = get_attention_map(self.global_model, x)
 
-        global_feat = self.global_model(x)
+        global_feat = self.global_channel_attn(self.global_model(x))
 
         if not self.use_local_branch:
-            fused_feat = global_feat
-            logits = self.classifier(fused_feat)
+            logits = self.classifier(global_feat)
             aux = {
                 'local_gate': torch.tensor(0.0, device=x.device, dtype=global_feat.dtype),
                 'local_branch_enabled': False,
@@ -234,14 +298,16 @@ class ViTFusionModel(nn.Module):
         local_inputs = local_inputs.view(bsz * k_parts, ch, height, width)
         local_feat = self.local_model(local_inputs)
         local_feat = local_feat.view(bsz, k_parts, -1)
+        local_feat = self.local_self_attn(local_feat)
 
-        gate = torch.sigmoid(self.local_gate)
         if self.use_cross_attention:
             local_enhanced = self.fusion(global_feat, local_feat)
         else:
             local_enhanced = local_feat.mean(dim=1)
 
-        fused_feat = (1.0 - gate) * global_feat + gate * local_enhanced
+        # Global-dominant fusion: keep global feature as anchor and use a small gate for local correction.
+        gate = self.local_gate_scale * torch.sigmoid(self.local_gate)
+        fused_feat = global_feat + gate * (local_enhanced - global_feat)
         out = self.classifier(fused_feat)
         aux = {
             'local_gate': gate,
@@ -258,18 +324,22 @@ class ViTFusion(ViTFusionModel):
         pretrained=False,
         crop_size=112,
         out_size=224,
-        topk_patches=2,
+        topk_patches=3,
         dropout=0.2,
         rollout_layers=4,
         attn_dropout_p=0.2,
+        use_local_self_attention=False,
         local_gate_init=1.0,
+        share_backbone=False,
     ):
         del crop_size, out_size, dropout, rollout_layers, attn_dropout_p
         super().__init__(
             num_classes=num_classes,
             topk=topk_patches,
             pretrained=pretrained,
+            use_local_self_attention=use_local_self_attention,
             local_gate_init=local_gate_init,
+            share_backbone=share_backbone,
         )
 
 
@@ -278,16 +348,20 @@ def create_vit_global_local(
     pretrained=False,
     crop_size=112,
     out_size=224,
-    topk_patches=2,
+    topk_patches=3,
     dropout=0.2,
     rollout_layers=4,
     attn_dropout_p=0.2,
+    use_local_self_attention=False,
     local_gate_init=1.0,
+    share_backbone=False,
 ):
     del crop_size, out_size, dropout, rollout_layers, attn_dropout_p
     return ViTFusionModel(
         num_classes=num_classes,
         topk=topk_patches,
         pretrained=pretrained,
+        use_local_self_attention=use_local_self_attention,
         local_gate_init=local_gate_init,
+        share_backbone=share_backbone,
     )

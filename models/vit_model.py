@@ -1,21 +1,38 @@
 import torch.nn as nn
+import os
+import timm
 
 
 def create_vit(num_classes, pretrained=True):
     """
-    Create a ViT model using torchvision pretrained weights.
+    Create a ViT-S/16 model from timm.
+
+    Model: vit_small_patch16_224
+    Pretrained weights: ImageNet-1K (when pretrained=True)
     """
-    model = None
-    # try torchvision first
+    # Use mirror endpoint when available to improve pretrained weight download stability.
+    os.environ.setdefault('HF_ENDPOINT', 'https://hf-mirror.com')
+
     try:
-        from torchvision.models import vit_b_16, ViT_B_16_Weights
-        weights = ViT_B_16_Weights.DEFAULT if pretrained else None
-        model = vit_b_16(weights=weights)
-    except Exception:
-        raise RuntimeError('torchvision ViT model not available; please install a compatible torchvision version')
+        model = timm.create_model('vit_small_patch16_224', pretrained=pretrained)
+    except Exception as e:
+        if pretrained:
+            raise RuntimeError(
+                'Failed to load timm pretrained vit_small_patch16_224 weights. '
+                'Check network/mirror access or run with --no_pretrained.'
+            ) from e
+        raise
+
+    # Ensure attention map extraction path can capture attention probabilities.
+    if hasattr(model, 'blocks'):
+        for blk in model.blocks:
+            if hasattr(blk, 'attn') and hasattr(blk.attn, 'fused_attn'):
+                blk.attn.fused_attn = False
 
     # replace classifier head (handle different model attribute names)
-    if hasattr(model, 'head') and hasattr(model.head, 'in_features'):
+    if hasattr(model, 'reset_classifier'):
+        model.reset_classifier(num_classes=num_classes)
+    elif hasattr(model, 'head') and hasattr(model.head, 'in_features'):
         in_features = model.head.in_features
         model.head = nn.Linear(in_features, num_classes)
     elif hasattr(model, 'heads') and hasattr(model.heads, 'head') and hasattr(model.heads.head, 'in_features'):
