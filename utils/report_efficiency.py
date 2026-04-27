@@ -59,24 +59,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--pretrained", action="store_true", help="Build models with pretrained weights.")
 
-    # ViT-Fusion options (match current default settings in training script)
+    # ViT-Fusion options (single-branch key-part modeling)
     parser.add_argument("--fusion_topk", type=int, default=3)
-    parser.add_argument("--fusion_use_cross_attention", action="store_true")
-    parser.add_argument("--fusion_use_local_self_attention", action="store_true")
-    parser.add_argument("--fusion_share_backbone", action="store_true")
-    parser.add_argument("--fusion_local_gate_init", type=float, default=-1.5)
-    parser.add_argument(
-        "--fusion_disable_attention_guidance_for_flops",
-        action="store_true",
-        default=True,
-        help="Disable attention guidance only during FLOPs estimation for ViT-Fusion to improve tool compatibility.",
-    )
-    parser.add_argument(
-        "--no_fusion_disable_attention_guidance_for_flops",
-        dest="fusion_disable_attention_guidance_for_flops",
-        action="store_false",
-        help="Keep attention guidance enabled during FLOPs estimation.",
-    )
+    fusion_attn_group = parser.add_mutually_exclusive_group()
+    fusion_attn_group.add_argument("--fusion_use_part_self_attention", dest="fusion_use_part_self_attention", action="store_true")
+    fusion_attn_group.add_argument("--fusion_no_part_self_attention", dest="fusion_use_part_self_attention", action="store_false")
+    parser.set_defaults(fusion_use_part_self_attention=True)
+    parser.add_argument("--fusion_part_gate_init", type=float, default=1.0)
+    parser.add_argument("--fusion_part_dropout_p", type=float, default=0.15)
+    # agvit options removed
 
     parser.add_argument("--output_csv", default=os.path.join(ROOT_DIR, "outputs", "evaluation", "efficiency", "efficiency_report.csv"))
     parser.add_argument("--output_md", default=os.path.join(ROOT_DIR, "outputs", "evaluation", "efficiency", "efficiency_report.md"))
@@ -114,17 +105,15 @@ def build_model(model_name: str, num_classes: int, args: argparse.Namespace) -> 
         return create_vgg(num_classes=num_classes, pretrained=args.pretrained)
     if model_name == "vit":
         return create_vit(num_classes=num_classes, pretrained=args.pretrained)
+    # agvit removed from supported models
     if model_name == "vit_fusion":
         return ViTFusionModel(
             num_classes=num_classes,
             topk=args.fusion_topk,
             pretrained=args.pretrained,
-            use_local_branch=True,
-            use_attention_guidance=True,
-            use_cross_attention=args.fusion_use_cross_attention,
-            use_local_self_attention=args.fusion_use_local_self_attention,
-            local_gate_init=args.fusion_local_gate_init,
-            share_backbone=args.fusion_share_backbone,
+            use_part_self_attention=args.fusion_use_part_self_attention,
+            part_gate_init=args.fusion_part_gate_init,
+            part_dropout_p=args.fusion_part_dropout_p,
         )
     raise ValueError(f"Unsupported model: {model_name}")
 
@@ -192,10 +181,8 @@ def estimate_flops(
     wrapped = LogitsOnlyWrapper(model)
     wrapped.eval()
 
+    del disable_attention_guidance_for_flops
     note = ""
-    if model_name == "vit_fusion" and disable_attention_guidance_for_flops and hasattr(wrapped.model, "use_attention_guidance"):
-        wrapped.model.use_attention_guidance = False
-        note = "attention_guidance disabled during FLOPs estimation"
 
     estimators = [
         _estimate_flops_thop,
@@ -378,7 +365,7 @@ def main() -> None:
             model=model,
             dummy=dummy,
             device=device,
-            disable_attention_guidance_for_flops=args.fusion_disable_attention_guidance_for_flops,
+            disable_attention_guidance_for_flops=False,
         )
 
         latency_ms_mean, latency_ms_std, latency_ms_p50, latency_ms_p90, throughput_fps = measure_latency(

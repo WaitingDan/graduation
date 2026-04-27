@@ -40,6 +40,8 @@ MODEL_COLORS = {
     'resnet': '#F58518',     # warm orange
     'vit_fusion': '#7E2F8E', # accent purple (highlighted)
     'vgg': '#54A24B',        # muted green
+    'vit_two_road': '#E45756', # dual-branch red
+    # 'agvit': '#17BECF',      # cyan (removed)
 }
 
 

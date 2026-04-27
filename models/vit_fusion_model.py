@@ -1,109 +1,36 @@
+"""
+vit_fusion_model.py
+
+架构修正版，核心变化：
+1. 单次前向同时拿到注意力与 token，避免两次前向带来的不一致与额外开销。
+2. 在中间层后做注意力引导的 patch 重加权，再送入后半段 block。
+3. 保留遮挡感知池化与自适应融合门控，并做特征空间对齐。
+4. 保留 get_attention_map 兼容可视化脚本。
+"""
+
+import math
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from models.vit_model import create_vit
 
 
-class MultiPartAttentionSoftMask:
-    def __init__(self, topk=3, patch_size=16):
-        self.topk = int(topk)
-        self.patch_size = int(patch_size)
-
-    def __call__(self, images, attn_map):
-        bsz, _, height, width = images.shape
-        grid_h = max(1, height // self.patch_size)
-        grid_w = max(1, width // self.patch_size)
-        total_grid = max(1, grid_h * grid_w)
-        topk = max(1, min(self.topk, attn_map.shape[1]))
-
-        local_views = []
-        attn_map = torch.softmax(attn_map, dim=-1)
-
-        for b in range(bsz):
-            attn = attn_map[b]
-            topk_vals, topk_idx = torch.topk(attn, topk)
-
-            part_views = []
-            for score, idx in zip(topk_vals, topk_idx):
-                idx_int = int(idx.item()) % total_grid
-                row = idx_int // grid_w
-                col = idx_int % grid_w
-
-                patch_mask = torch.zeros((1, 1, grid_h, grid_w), device=images.device, dtype=images.dtype)
-                patch_mask[0, 0, row, col] = 1.0
-                soft_mask = F.interpolate(patch_mask, size=(height, width), mode='bilinear', align_corners=False)
-                soft_mask = soft_mask / soft_mask.amax(dim=(-2, -1), keepdim=True).clamp_min(1e-6)
-
-                # Keep a small amount of global context to avoid information collapse.
-                weighted = images[b : b + 1] * (0.2 + 0.8 * soft_mask * score)
-                part_views.append(weighted)
-
-            local_views.append(torch.cat(part_views, dim=0))
-
-        return torch.stack(local_views, dim=0)
-
-
-class CrossAttentionFusion(nn.Module):
-    def __init__(self, dim, num_heads=4):
-        super().__init__()
-        self.attn = nn.MultiheadAttention(dim, num_heads=num_heads, batch_first=True)
-        self.norm = nn.LayerNorm(dim)
-
-    def forward(self, global_feat, local_feat):
-        query = global_feat.unsqueeze(1)
-        key = local_feat
-        value = local_feat
-
-        out, _ = self.attn(query, key, value)
-        out = self.norm(out + query)
-        return out.squeeze(1)
-
-
-class ChannelAttentionEnhance(nn.Module):
-    def __init__(self, dim, kernel_size=5):
-        super().__init__()
-        k = max(3, int(kernel_size))
-        if k % 2 == 0:
-            k += 1
-        self.conv = nn.Conv1d(1, 1, kernel_size=k, padding=k // 2, bias=False)
-        self.gate = nn.Sigmoid()
-        self.gamma = nn.Parameter(torch.zeros(1))
-
-    def forward(self, x):
-        # x: [B, C], apply lightweight channel interaction.
-        attn = self.conv(x.unsqueeze(1)).squeeze(1)
-        attn = self.gate(attn)
-        return x * (1.0 + self.gamma * (2.0 * attn - 1.0))
-
-
-class LocalPartSelfAttention(nn.Module):
-    def __init__(self, dim, num_heads=4):
-        super().__init__()
-        self.attn = nn.MultiheadAttention(dim, num_heads=num_heads, batch_first=True)
-        self.norm = nn.LayerNorm(dim)
-        self.gamma = nn.Parameter(torch.zeros(1))
-
-    def forward(self, x):
-        if x.dim() != 3 or x.size(1) <= 1:
-            return x
-
-        residual = x
-        attn_out, _ = self.attn(x, x, x, need_weights=False)
-        return self.norm(residual + self.gamma * attn_out)
-
+# ---------------------------------------------------------------------------
+# 工具函数
+# ---------------------------------------------------------------------------
 
 def get_feature_dim(model):
     if hasattr(model, 'num_features'):
         return int(model.num_features)
     if hasattr(model, 'head') and hasattr(model.head, 'in_features'):
         return int(model.head.in_features)
-    if hasattr(model, 'heads') and hasattr(model.heads, 'head') and hasattr(model.heads.head, 'in_features'):
+    if hasattr(model, 'heads') and hasattr(model.heads, 'head') \
+            and hasattr(model.heads.head, 'in_features'):
         return int(model.heads.head.in_features)
     if hasattr(model, 'classifier') and hasattr(model.classifier, 'in_features'):
         return int(model.classifier.in_features)
-    for _, m in model.named_modules():
-        if isinstance(m, nn.Linear):
-            return int(m.in_features)
+    for _, module in model.named_modules():
+        if isinstance(module, nn.Linear):
+            return int(module.in_features)
     raise RuntimeError('Failed to determine feature dimension for model')
 
 
@@ -119,249 +46,407 @@ def set_feature_extractor_head(model):
         return
 
 
-def get_attention_map(model, x, rollout_layers=None):
-    # Try torchvision-style encoder rollout if available
-    if hasattr(model, 'encoder') and hasattr(model, '_process_input'):
-        tokens = model._process_input(x)
-        batch_size = tokens.shape[0]
-        encoder = model.encoder
-        tokens = encoder.dropout(tokens)
-
-        all_layers = list(encoder.layers)
-        if rollout_layers is None or int(getattr(rollout_layers, '')) == 0:
-            selected_start = 0
-        else:
-            selected_start = max(0, len(all_layers) - int(rollout_layers))
-
-        attentions = []
-        for layer_index, layer in enumerate(all_layers):
-            norm_tokens = layer.ln_1(tokens)
-            attn_module = getattr(layer, 'self_attention', None) or getattr(layer, 'attention', None)
-            if attn_module is None:
-                tokens = layer(tokens)
-                continue
-
-            try:
-                qkv = F.linear(norm_tokens, attn_module.in_proj_weight, attn_module.in_proj_bias)
-                q, k, _ = qkv.chunk(3, dim=-1)
-                head_dim = attn_module.head_dim
-                num_heads = attn_module.num_heads
-                scale = 1.0 / (head_dim ** 0.5)
-
-                q = q.view(batch_size, q.shape[1], num_heads, head_dim).permute(0, 2, 1, 3)
-                k = k.view(batch_size, k.shape[1], num_heads, head_dim).permute(0, 2, 1, 3)
-                attn_score = torch.matmul(q, k.transpose(-2, -1)) * scale
-                attn_prob = torch.softmax(attn_score, dim=-1)
-            except Exception:
-                tokens = layer(tokens)
-                continue
-
-            if layer_index >= selected_start:
-                attentions.append(attn_prob)
-
-            tokens = layer(tokens)
-
-        if not attentions:
-            raise RuntimeError('No attention layers available for rollout.')
-
-        token_count = attentions[0].size(-1)
-        eye = torch.eye(token_count, device=x.device).unsqueeze(0)
-        rollout = eye.expand(batch_size, token_count, token_count)
-        for attn in attentions:
-            attn_mean = attn.mean(dim=1)
-            attn_mean = attn_mean + eye
-            attn_mean = attn_mean / attn_mean.sum(dim=-1, keepdim=True).clamp_min(1e-6)
-            rollout = torch.matmul(attn_mean, rollout)
-
-        cls_to_patch = rollout[:, 0, 1:]
-        return cls_to_patch
-
-    # Fallback: try timm-style blocks hook
-    if hasattr(model, 'blocks') and model.blocks:
-        captured = []
-
-        def hook(_module, _inputs, output):
-            captured.append(output)
-
-        handle = model.blocks[-1].attn.attn_drop.register_forward_hook(hook)
-        was_training = model.training
-        try:
-            model.eval()
-            with torch.no_grad():
-                _ = model(x)
-        finally:
-            handle.remove()
-            if was_training:
-                model.train()
-
-        if not captured:
-            raise RuntimeError('Failed to capture attention map from global model.')
-
-        attn = captured[0]
-        if attn.dim() == 4:
-            attn_map = attn.mean(dim=1)[:, 0, 1:]
-        elif attn.dim() == 3:
-            if attn.shape[1] == attn.shape[2]:
-                attn_map = attn[:, 0, 1:]
+def _prepare_vit_tokens(model, x):
+    """手动走 patch embed + position embed，返回初始 token 序列。"""
+    tokens = model.patch_embed(x)
+    if hasattr(model, '_pos_embed'):
+        tokens = model._pos_embed(tokens)
+    else:
+        cls_token = getattr(model, 'cls_token', None)
+        if cls_token is not None:
+            dist_token = getattr(model, 'dist_token', None)
+            cls_tokens = cls_token.expand(tokens.shape[0], -1, -1)
+            if dist_token is not None:
+                tokens = torch.cat(
+                    (cls_tokens, dist_token.expand(tokens.shape[0], -1, -1), tokens),
+                    dim=1,
+                )
             else:
-                attn_map = attn[:, 1:]
-        else:
-            raise RuntimeError(f'Unexpected attention shape: {tuple(attn.shape)}')
+                tokens = torch.cat((cls_tokens, tokens), dim=1)
+        pos_embed = getattr(model, 'pos_embed', None)
+        if pos_embed is not None:
+            tokens = tokens + pos_embed
+        pos_drop = getattr(model, 'pos_drop', None)
+        if pos_drop is not None:
+            tokens = pos_drop(tokens)
 
-        return attn_map
+    if hasattr(model, 'patch_drop'):
+        tokens = model.patch_drop(tokens)
+    if hasattr(model, 'norm_pre'):
+        tokens = model.norm_pre(tokens)
+    return tokens
 
-    raise RuntimeError('Model type not supported for attention extraction')
 
+def _get_block_attention(block, tokens):
+    """从一个 ViT block 提取注意力权重矩阵，不改变 tokens。"""
+    attn_module = getattr(block, 'attn', None)
+    if attn_module is None or not hasattr(attn_module, 'qkv'):
+        return None
+
+    norm_tokens = block.norm1(tokens) if hasattr(block, 'norm1') else tokens
+    qkv = attn_module.qkv(norm_tokens)
+    batch_size, token_count, _ = qkv.shape
+    num_heads = int(getattr(attn_module, 'num_heads', 0))
+    if num_heads <= 0:
+        return None
+
+    head_dim = qkv.shape[-1] // (3 * num_heads)
+    q, k = qkv.reshape(batch_size, token_count, 3, num_heads, head_dim).permute(2, 0, 3, 1, 4)[:2]
+    scale = float(getattr(attn_module, 'scale', head_dim ** -0.5))
+    return (q * scale @ k.transpose(-2, -1)).softmax(dim=-1)
+
+
+def _rollout_from_attentions(attentions, device):
+    """对注意力矩阵列表做 rollout，返回 cls-to-patch [B, N_patch]。"""
+    if not attentions:
+        return None
+
+    token_count = attentions[0].shape[-1]
+    eye = torch.eye(token_count, device=device).unsqueeze(0)
+    rollout = eye.expand(attentions[0].shape[0], -1, -1).clone()
+
+    for attn in attentions:
+        attn_mean = attn.mean(dim=1)
+        attn_aug = attn_mean + eye
+        attn_aug = attn_aug / attn_aug.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+        rollout = torch.bmm(attn_aug, rollout)
+
+    return rollout[:, 0, 1:]
+
+
+def get_attention_map(model, x, rollout_layers=None):
+    """兼容可视化脚本的接口，返回 cls-to-patch rollout 注意力 [B, N]。"""
+    layers = int(rollout_layers) if rollout_layers is not None else 4
+    tokens = _prepare_vit_tokens(model, x)
+    attentions = []
+
+    with torch.no_grad():
+        for block in model.blocks:
+            attn = _get_block_attention(block, tokens)
+            if attn is not None:
+                attentions.append(attn)
+            tokens = block(tokens)
+
+    if not attentions:
+        raise RuntimeError('Failed to capture attention maps')
+    return _rollout_from_attentions(attentions[-layers:], x.device)
+
+
+def get_attention_rollout(model, x, rollout_layers=4):
+    """向后兼容旧函数名。"""
+    return get_attention_map(model, x, rollout_layers=rollout_layers)
+
+
+# ---------------------------------------------------------------------------
+# 子模块
+# ---------------------------------------------------------------------------
+
+class MidLayerAttnReweight(nn.Module):
+    """
+    中间层注意力引导 patch token 重加权。
+
+    残差形式：out = x + gamma * (weighted - x)
+    gamma 初始化为 0，训练初期等价 identity。
+    """
+
+    def __init__(self, temperature=1.0):
+        super().__init__()
+        self.temperature = float(max(0.1, temperature))
+        self.gamma = nn.Parameter(torch.zeros(1))
+        self.score_proj = nn.Sequential(
+            nn.Linear(1, 4),
+            nn.GELU(),
+            nn.Linear(4, 1),
+        )
+
+        # 初始化为近似恒等映射
+        nn.init.zeros_(self.score_proj[0].weight)
+        nn.init.ones_(self.score_proj[0].bias)
+        nn.init.zeros_(self.score_proj[2].weight)
+        nn.init.zeros_(self.score_proj[2].bias)
+
+    def forward(self, patch_tokens, rollout_score):
+        s_min = rollout_score.min(dim=1, keepdim=True).values
+        s_max = rollout_score.max(dim=1, keepdim=True).values
+        score_norm = (rollout_score - s_min) / (s_max - s_min + 1e-6)
+
+        score_proj = self.score_proj(score_norm.unsqueeze(-1)).squeeze(-1)
+        weight = torch.softmax(score_proj / self.temperature, dim=-1)
+        weighted = patch_tokens * weight.unsqueeze(-1)
+        return patch_tokens + self.gamma * (weighted - patch_tokens)
+
+
+class OcclusionAwareTokenPool(nn.Module):
+    """遮挡感知 Top-K 池化。"""
+
+    def __init__(self, topk=6, entropy_penalty=0.5):
+        super().__init__()
+        self.topk = int(topk)
+        self.entropy_penalty = float(entropy_penalty)
+
+    def forward(self, patch_tokens, attn_score):
+        batch, n_patch, dim = patch_tokens.shape
+        topk = min(self.topk, n_patch)
+
+        # Per-token entropy contribution keeps the penalty effective after normalization.
+        token_uncertainty = -(attn_score * torch.log(attn_score.clamp_min(1e-8)))
+        token_uncertainty = token_uncertainty / math.log(max(2, n_patch))
+        token_confidence = (1.0 - self.entropy_penalty * token_uncertainty).clamp(0.1, 1.0)
+
+        weight = attn_score * token_confidence
+        weight = weight / weight.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+
+        local_feat = (patch_tokens * weight.unsqueeze(-1)).sum(dim=1)
+
+        topk_idx = weight.topk(topk, dim=-1).indices
+        topk_tokens = torch.gather(
+            patch_tokens,
+            dim=1,
+            index=topk_idx.unsqueeze(-1).expand(-1, -1, dim),
+        )
+        return local_feat, topk_tokens
+
+
+class LocalRefiner(nn.Module):
+    """局部向量残差精炼。"""
+
+    def __init__(self, dim, hidden_ratio=0.5):
+        super().__init__()
+        hidden = max(32, int(dim * hidden_ratio))
+        self.norm = nn.LayerNorm(dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, dim),
+        )
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x):
+        return x + self.gamma * self.mlp(self.norm(x))
+
+
+class FusionGate(nn.Module):
+    """融合门控，先做拼接归一化后输出 [B, 1]。"""
+
+    def __init__(self, dim, hidden_ratio=0.25):
+        super().__init__()
+        hidden = max(16, int(dim * hidden_ratio))
+        self.norm = nn.LayerNorm(dim * 2)
+        self.net = nn.Sequential(
+            nn.Linear(dim * 2, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, 1),
+        )
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
+
+    def forward(self, global_feat, local_feat):
+        fused = self.norm(torch.cat([global_feat, local_feat], dim=-1))
+        return torch.sigmoid(self.net(fused))
+
+
+# ---------------------------------------------------------------------------
+# 主模型
+# ---------------------------------------------------------------------------
 
 class ViTFusionModel(nn.Module):
+    """AG-ViT: Attention-Guided ViT for Ship Recognition."""
+
     def __init__(
         self,
         num_classes=10,
-        topk=3,
+        topk=6,
         pretrained=True,
-        patch_size=16,
-        use_local_branch=True,
-        use_attention_guidance=True,
-        use_cross_attention=False,
-        use_local_self_attention=False,
-        local_gate_init=1.0,
-        share_backbone=False,
+        attn_rollout_layers=4,
+        split_layer=8,
+        part_gate_init=0.0,
+        part_dropout_p=0.1,
+        attn_temperature=1.0,
+        entropy_penalty=0.5,
+        mid_reweight_temperature=1.0,
+        enable_module_a=True,
+        enable_module_b=True,
+        enable_module_c=True,
+        # 兼容旧接口
+        use_part_self_attention=None,
+        use_local_self_attention=None,
+        local_gate_init=None,
+        **_unused,
     ):
         super().__init__()
 
-        self.use_local_branch = bool(use_local_branch)
-        self.use_attention_guidance = bool(use_attention_guidance)
-        self.use_cross_attention = bool(use_cross_attention)
-        self.use_local_self_attention = bool(use_local_self_attention)
-        self.share_backbone = bool(share_backbone)
-        self.local_gate_scale = 0.25
+        del use_part_self_attention, use_local_self_attention
+        if local_gate_init is not None:
+            part_gate_init = float(local_gate_init)
 
-        self.global_model = create_vit(num_classes=num_classes, pretrained=pretrained)
-        set_feature_extractor_head(self.global_model)
+        self.topk = max(1, int(topk))
+        self.attn_rollout_layers = max(1, int(attn_rollout_layers))
+        self.part_dropout_p = float(max(0.0, min(0.9, part_dropout_p)))
+        self.attn_temperature = float(max(0.1, attn_temperature))
+        self.enable_module_a = bool(enable_module_a)
+        self.enable_module_b = bool(enable_module_b)
+        self.enable_module_c = bool(enable_module_c)
 
-        if self.share_backbone:
-            self.local_model = self.global_model
-        else:
-            self.local_model = create_vit(num_classes=num_classes, pretrained=pretrained)
-            set_feature_extractor_head(self.local_model)
+        self.backbone = create_vit(num_classes=num_classes, pretrained=pretrained)
+        set_feature_extractor_head(self.backbone)
+        self.global_model = self.backbone
 
-        self.embed_dim = get_feature_dim(self.global_model)
-        self.global_channel_attn = ChannelAttentionEnhance(self.embed_dim)
-        self.localizer = MultiPartAttentionSoftMask(topk=topk, patch_size=patch_size)
-        self.local_self_attn = LocalPartSelfAttention(self.embed_dim) if self.use_local_self_attention else nn.Identity()
-        self.fusion = CrossAttentionFusion(self.embed_dim)
+        self.embed_dim = get_feature_dim(self.backbone)
+        n_blocks = len(self.backbone.blocks)
+        # split_layer 表示在第 split_layer 层之后插入重加权。
+        self.split_layer = max(1, min(int(split_layer), n_blocks - 1))
+
+        self.mid_reweight = MidLayerAttnReweight(temperature=mid_reweight_temperature)
+        self.occ_pool = OcclusionAwareTokenPool(topk=self.topk, entropy_penalty=entropy_penalty)
+        self.local_refiner = LocalRefiner(self.embed_dim, hidden_ratio=0.5)
+        self.fusion_gate = FusionGate(self.embed_dim, hidden_ratio=0.25)
+
+        self.part_gate = nn.Parameter(torch.tensor(float(part_gate_init)))
         self.classifier = nn.Linear(self.embed_dim, num_classes)
-        self.local_gate = nn.Parameter(torch.tensor(float(local_gate_init)))
+        self.local_classifier = nn.Linear(self.embed_dim, num_classes)
+
+    def _normalize_score(self, score):
+        s_min = score.min(dim=1, keepdim=True).values
+        s_max = score.max(dim=1, keepdim=True).values
+        norm = (score - s_min) / (s_max - s_min + 1e-6)
+        return torch.softmax(norm / self.attn_temperature, dim=-1)
+
+    def _forward_with_attn(self, x):
+        """
+        单次遍历 backbone：
+        1) 前半段收集注意力并 rollout。
+        2) 在 split_layer 后对 patch token 做重加权。
+        3) 继续后半段 block，输出最终 token。
+        """
+        tokens = _prepare_vit_tokens(self.backbone, x)
+        first_half_attentions = []
+        rollout_score = None
+
+        for idx, block in enumerate(self.backbone.blocks):
+            if idx < self.split_layer:
+                attn = _get_block_attention(block, tokens)
+                if attn is not None:
+                    first_half_attentions.append(attn)
+
+            tokens = block(tokens)
+
+            # 在 split_layer 层后插入注意力引导重加权
+            if idx == self.split_layer - 1:
+                layers = min(self.attn_rollout_layers, len(first_half_attentions))
+                rollout_score = _rollout_from_attentions(first_half_attentions[-layers:], x.device)
+
+                if rollout_score is None:
+                    n_patch = tokens.shape[1] - 1
+                    rollout_score = torch.ones(tokens.shape[0], n_patch, device=x.device) / n_patch
+
+                cls_token = tokens[:, :1, :]
+                patch_tokens = tokens[:, 1:, :]
+                if self.enable_module_a:
+                    patch_tokens = self.mid_reweight(patch_tokens, rollout_score)
+                tokens = torch.cat([cls_token, patch_tokens], dim=1)
+
+        if hasattr(self.backbone, 'norm'):
+            tokens = self.backbone.norm(tokens)
+
+        if rollout_score is None:
+            # 极端情况下 split 前未取到可用注意力，fallback 为均匀分布
+            n_patch = tokens.shape[1] - 1
+            rollout_score = torch.ones(tokens.shape[0], n_patch, device=x.device) / n_patch
+
+        return tokens, rollout_score
 
     def backbone_parameters(self):
-        seen = set()
-        for module in (self.global_model, self.local_model):
-            if module is None:
-                continue
-            for param in module.parameters():
-                param_id = id(param)
-                if param_id in seen:
-                    continue
-                seen.add(param_id)
-                yield param
+        yield from self.backbone.parameters()
 
     def head_parameters(self):
         for module in (
-            self.global_channel_attn,
-            self.local_self_attn,
-            self.fusion,
+            self.mid_reweight,
+            self.occ_pool,
+            self.local_refiner,
+            self.fusion_gate,
             self.classifier,
+            self.local_classifier,
         ):
             yield from module.parameters()
-        yield self.local_gate
+        yield self.part_gate
 
     def forward(self, x, attn_map=None):
-        if attn_map is None and self.use_local_branch and self.use_attention_guidance:
-            attn_map = get_attention_map(self.global_model, x)
+        # 保留 attn_map 入参兼容性，但默认使用单次前向内部生成的 rollout。
+        final_tokens, rollout_score = self._forward_with_attn(x)
 
-        global_feat = self.global_channel_attn(self.global_model(x))
+        if attn_map is not None:
+            # 外部传入时仅用于池化分支，保持向后兼容。
+            rollout_score = attn_map
 
-        if not self.use_local_branch:
-            logits = self.classifier(global_feat)
-            aux = {
-                'local_gate': torch.tensor(0.0, device=x.device, dtype=global_feat.dtype),
-                'local_branch_enabled': False,
-            }
-            return logits, global_feat, None, aux
+        cls_token = final_tokens[:, 0, :]
+        patch_count = rollout_score.shape[1]
+        patch_tokens = final_tokens[:, -patch_count:, :]
 
-        if self.use_attention_guidance and attn_map is not None:
-            local_inputs = self.localizer(x, attn_map)
+        global_feat = cls_token
+        score = self._normalize_score(rollout_score)
+
+        if self.training and self.part_dropout_p > 0.0:
+            mask = (torch.rand_like(score) > self.part_dropout_p).float()
+            score = score * mask
+            score = score / score.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+
+        local_feat, topk_tokens = self.occ_pool(patch_tokens, score)
+        if self.enable_module_b:
+            local_feat = self.local_refiner(local_feat)
+
+        global_gate = torch.sigmoid(self.part_gate)
+        if self.enable_module_c:
+            content_gate = self.fusion_gate(global_feat, local_feat)
         else:
-            local_inputs = x.unsqueeze(1).repeat(1, self.localizer.topk, 1, 1, 1)
+            content_gate = torch.ones_like(global_gate)
+        gate = global_gate * content_gate
 
-        bsz, k_parts, ch, height, width = local_inputs.shape
-        local_inputs = local_inputs.view(bsz * k_parts, ch, height, width)
-        local_feat = self.local_model(local_inputs)
-        local_feat = local_feat.view(bsz, k_parts, -1)
-        local_feat = self.local_self_attn(local_feat)
+        fused_feat = global_feat + gate * (local_feat - global_feat)
+        logits = self.classifier(fused_feat)
 
-        if self.use_cross_attention:
-            local_enhanced = self.fusion(global_feat, local_feat)
-        else:
-            local_enhanced = local_feat.mean(dim=1)
-
-        # Global-dominant fusion: keep global feature as anchor and use a small gate for local correction.
-        gate = self.local_gate_scale * torch.sigmoid(self.local_gate)
-        fused_feat = global_feat + gate * (local_enhanced - global_feat)
-        out = self.classifier(fused_feat)
+        entropy = -(score * torch.log(score.clamp_min(1e-8))).sum(dim=-1)
         aux = {
+            'part_gate': gate,
+            'attn_entropy': entropy.mean(),
+            'local_feat': local_feat,
             'local_gate': gate,
             'local_branch_enabled': True,
+            'attn_temperature': self.attn_temperature,
+            'enable_module_a': self.enable_module_a,
+            'enable_module_b': self.enable_module_b,
+            'enable_module_c': self.enable_module_c,
         }
-        return out, global_feat, local_feat, aux
+        return logits, global_feat, topk_tokens, aux
 
 
-# Backward-compatible aliases used by other scripts.
 class ViTFusion(ViTFusionModel):
     def __init__(
         self,
         num_classes,
         pretrained=False,
-        crop_size=112,
-        out_size=224,
-        topk_patches=3,
-        dropout=0.2,
-        rollout_layers=4,
-        attn_dropout_p=0.2,
-        use_local_self_attention=False,
-        local_gate_init=1.0,
-        share_backbone=False,
+        topk_patches=6,
+        attn_rollout_layers=4,
+        local_gate_init=0.0,
+        part_dropout_p=0.1,
+        attn_temperature=1.0,
+        entropy_penalty=0.5,
+        split_layer=8,
+        mid_reweight_temperature=1.0,
+        **_unused,
     ):
-        del crop_size, out_size, dropout, rollout_layers, attn_dropout_p
         super().__init__(
             num_classes=num_classes,
             topk=topk_patches,
             pretrained=pretrained,
-            use_local_self_attention=use_local_self_attention,
-            local_gate_init=local_gate_init,
-            share_backbone=share_backbone,
+            attn_rollout_layers=attn_rollout_layers,
+            part_gate_init=local_gate_init,
+            part_dropout_p=part_dropout_p,
+            attn_temperature=attn_temperature,
+            entropy_penalty=entropy_penalty,
+            split_layer=split_layer,
+            mid_reweight_temperature=mid_reweight_temperature,
         )
 
 
-def create_vit_global_local(
-    num_classes,
-    pretrained=False,
-    crop_size=112,
-    out_size=224,
-    topk_patches=3,
-    dropout=0.2,
-    rollout_layers=4,
-    attn_dropout_p=0.2,
-    use_local_self_attention=False,
-    local_gate_init=1.0,
-    share_backbone=False,
-):
-    del crop_size, out_size, dropout, rollout_layers, attn_dropout_p
-    return ViTFusionModel(
-        num_classes=num_classes,
-        topk=topk_patches,
-        pretrained=pretrained,
-        use_local_self_attention=use_local_self_attention,
-        local_gate_init=local_gate_init,
-        share_backbone=share_backbone,
-    )
+def create_vit_global_local(num_classes, pretrained=False, **kwargs):
+    return ViTFusionModel(num_classes=num_classes, pretrained=pretrained, **kwargs)

@@ -3,7 +3,7 @@ Train ViT example:
 
 python train/train_vit.py \
     --dataset_subdir dataset/ship_fine \
-    --epochs 15 \
+    --epochs 30 \
     --batch_size 32 \
     --lr 4e-4 \
     --weight_name vit_best.pth
@@ -57,24 +57,32 @@ def set_seed(seed: int, deterministic: bool = False):
     torch.backends.cudnn.benchmark = not bool(deterministic)
 
 
+def get_warmup_lr_scale(epoch, warmup_epochs=3):
+    if epoch < warmup_epochs:
+        return (epoch + 1) / warmup_epochs
+    return 1.0
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset_subdir', default='dataset/ship_fine', help='dataset subdir under project root')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=30)
-    parser.add_argument('--lr', type=float, default=4e-4, help='learning rate for fine-tuning')
+    parser.add_argument('--lr', type=float, default=2e-4, help='learning rate for fine-tuning')
     parser.add_argument('--weight_decay', type=float, default=1e-4)
-    parser.add_argument('--label_smoothing', type=float, default=0.0)
+    parser.add_argument('--label_smoothing', type=float, default=0.1)
     parser.add_argument('--accum_steps', type=int, default=1)
     parser.add_argument('--no_amp', action='store_true')
     parser.add_argument('--no_pretrained', action='store_true')
+    parser.add_argument('--warmup_epochs', type=int, default=3, help='learning rate warmup epochs')
+    parser.add_argument('--grad_clip', type=float, default=1.0, help='gradient clipping max_norm (0 to disable)')
     parser.add_argument('--deterministic', action='store_true', help='enable deterministic cudnn mode')
     parser.add_argument('--weight_name', default='vit_best.pth', help='output weight file name under weights/')
     parser.add_argument('--seed', type=int, default=42, help='random seed for reproducibility')
-    parser.add_argument('--early_stop_patience', type=int, default=10, help='early stopping patience')
+    parser.add_argument('--early_stop_patience', type=int, default=15, help='early stopping patience')
     parser.add_argument('--train_occlusion_mode', choices=['none', 'block', 'stripe', 'mixed'], default='none')
-    parser.add_argument('--train_occlusion_level', choices=['light', 'medium', 'heavy'], default='light')
+    parser.add_argument('--train_occlusion_level', choices=['light', 'medium', 'heavy'], default='medium')
     parser.add_argument('--train_occlusion_p', type=float, default=0.0)
     return parser.parse_args()
 
@@ -184,6 +192,12 @@ def main():
 
         print(f"\nEpoch {epoch+1}/{epochs}")
 
+        # Warmup: linearly scale LR for the first args.warmup_epochs
+        lr_scale = get_warmup_lr_scale(epoch, getattr(args, 'warmup_epochs', 0))
+        if epoch < getattr(args, 'warmup_epochs', 0):
+            for pg in optimizer.param_groups:
+                pg['lr'] = args.lr * lr_scale
+
         # ---------- train ----------
 
         model.train()
@@ -207,6 +221,14 @@ def main():
 
             loss_for_backward = loss / args.accum_steps
             scaler.scale(loss_for_backward).backward()
+
+            # 梯度裁剪（如果启用）
+            if getattr(args, 'grad_clip', 0) and args.grad_clip > 0:
+                try:
+                    scaler.unscale_(optimizer)
+                except Exception:
+                    pass
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.grad_clip)
 
             if (step % args.accum_steps == 0) or (step == len(train_loader)):
                 scaler.step(optimizer)

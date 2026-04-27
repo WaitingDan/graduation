@@ -23,6 +23,7 @@ from models.vit_model import create_vit
 from models.resnet_model import create_resnet
 from models.vgg_model import create_vgg
 from models.vit_fusion_model import create_vit_global_local, ViTFusionModel
+from models.two_road import ViTFusionModel as ViTTwoRoadModel
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -41,6 +42,17 @@ def _pick_first_existing(*paths):
         if os.path.exists(path):
             return path
     return paths[0]
+
+
+def _load_weight_meta(weight_path):
+    meta_path = weight_path + '.meta.json'
+    if not os.path.exists(meta_path):
+        return {}
+    try:
+        with open(meta_path, 'r', encoding='utf-8') as mf:
+            return json.load(mf)
+    except Exception:
+        return {}
 
 
 def _resolve_weight_path(model_name, seed=None, explicit_path=None):
@@ -90,7 +102,73 @@ def _resolve_weight_path(model_name, seed=None, explicit_path=None):
         candidates.append(os.path.join(ROOT_DIR, 'weights/vit_fusion_best.pth'))
         return _pick_first_existing(*candidates)
 
+    if model_name == 'vit_two_road':
+        candidates = []
+        if seed_suffix is not None:
+            candidates.append(os.path.join(ROOT_DIR, f'weights/two_road/vit_two_road_best{seed_suffix}.pth'))
+        candidates.extend([
+            os.path.join(ROOT_DIR, 'weights/two_road/vit_two_road_best.pth'),
+            os.path.join(ROOT_DIR, 'weights/vit_two_road_best.pth'),
+        ])
+        return _pick_first_existing(*candidates)
+
     raise ValueError(f'Unknown model for weight resolution: {model_name}')
+
+
+def _build_vit_fusion_model(num_classes, weight_path=None, fusion_modules_override=None):
+    meta = _load_weight_meta(weight_path) if weight_path is not None else {}
+
+    architecture = str(meta.get('architecture', 'single_branch_part_aware'))
+    topk = int(meta.get('topk_patches', 3))
+    attn_rollout_layers = int(meta.get('attn_rollout_layers', 3))
+    part_gate_init = float(meta.get('part_gate_init', meta.get('local_gate_init', 1.0)))
+    part_dropout_p = float(meta.get('part_dropout_p', 0.15))
+    use_part_self_attention = bool(meta.get('use_part_self_attention', meta.get('use_local_self_attention', False)))
+    attn_temperature = float(meta.get('attn_temperature', 0.7))
+    share_backbone = bool(meta.get('share_backbone', False))
+    use_cross_attention = bool(meta.get('use_cross_attention', False))
+    fusion_modules = str(meta.get('fusion_modules', 'abc')).lower()
+    if fusion_modules_override is not None:
+        # Ablation mode should strictly follow CLI override instead of saved meta flags.
+        fusion_modules = str(fusion_modules_override).lower()
+        enable_module_a = 'a' in fusion_modules
+        enable_module_b = 'b' in fusion_modules
+        enable_module_c = 'c' in fusion_modules
+    else:
+        enable_module_a = bool(meta.get('enable_module_a', 'a' in fusion_modules))
+        enable_module_b = bool(meta.get('enable_module_b', 'b' in fusion_modules))
+        enable_module_c = bool(meta.get('enable_module_c', 'c' in fusion_modules))
+
+    if architecture in ('single_branch_part_aware', 'vit_fusion_fixed'):
+        return ViTFusionModel(
+            num_classes=num_classes,
+            topk=topk,
+            pretrained=False,
+            attn_rollout_layers=attn_rollout_layers,
+            use_part_self_attention=use_part_self_attention,
+            part_gate_init=part_gate_init,
+            part_dropout_p=part_dropout_p,
+            attn_temperature=attn_temperature,
+            enable_module_a=enable_module_a,
+            enable_module_b=enable_module_b,
+            enable_module_c=enable_module_c,
+        )
+
+    # Fallback to the backward-compatible constructor for older checkpoints.
+    return create_vit_global_local(
+        num_classes=num_classes,
+        pretrained=False,
+        topk_patches=topk,
+        attn_rollout_layers=attn_rollout_layers,
+        use_cross_attention=use_cross_attention,
+        use_local_self_attention=use_part_self_attention,
+        local_gate_init=part_gate_init,
+        part_dropout_p=part_dropout_p,
+        share_backbone=share_backbone,
+    )
+
+
+# agvit builder removed; agvit is no longer supported in this codebase
 
 
 def run_evaluation(
@@ -106,6 +184,7 @@ def run_evaluation(
     file_suffix='',
     seed=None,
     vit_fusion_weight=None,
+    vit_two_road_weight=None,
 ):
     set_seed(seed)
 
@@ -159,7 +238,13 @@ def run_evaluation(
             # instantiate vit_fusion according to saved checkpoint metadata when available
             "model": None,
             "weight": _resolve_weight_path('vit_fusion', seed=seed, explicit_path=vit_fusion_weight)
-        }
+        },
+
+        "vit_two_road": {
+            "model": None,
+            "weight": _resolve_weight_path('vit_two_road', seed=seed, explicit_path=vit_two_road_weight)
+        },
+
     }
 
     model_names = selected_models if selected_models else list(models.keys())
@@ -175,31 +260,19 @@ def run_evaluation(
         weight_path = models[name]["weight"]
         model = models[name]["model"]
         if name == 'vit_fusion':
-            # if metadata exists next to weights, use it to set runtime flags
-            try:
-                meta_path = weight_path + '.meta.json'
-                if os.path.exists(meta_path):
-                    with open(meta_path, 'r', encoding='utf-8') as mf:
-                        meta = json.load(mf)
-                    use_cross = bool(meta.get('use_cross_attention', False))
-                    topk = int(meta.get('topk_patches', 3))
-                    local_gate_init = float(meta.get('local_gate_init', 1.0))
-                    share_backbone = bool(meta.get('share_backbone', False))
-                    use_local_self_attention = bool(meta.get('use_local_self_attention', False))
-                    model = ViTFusionModel(
-                        num_classes=num_classes,
-                        topk=topk,
-                        pretrained=False,
-                        use_local_self_attention=use_local_self_attention,
-                        local_gate_init=local_gate_init,
-                        share_backbone=share_backbone,
-                        use_cross_attention=use_cross,
-                    )
-                else:
-                    # fallback to default factory
-                    model = create_vit_global_local(num_classes=num_classes, pretrained=False)
-            except Exception:
-                model = create_vit_global_local(num_classes=num_classes, pretrained=False)
+            model = _build_vit_fusion_model(num_classes=num_classes, weight_path=weight_path)
+        elif name == 'vit_two_road':
+            meta = _load_weight_meta(weight_path)
+            model = ViTTwoRoadModel(
+                num_classes=num_classes,
+                pretrained=False,
+                topk=int(meta.get('topk_patches', 3)),
+                use_cross_attention=bool(meta.get('use_cross_attention', False)),
+                use_local_self_attention=bool(meta.get('use_local_self_attention', False)),
+                local_gate_init=float(meta.get('local_gate_init', 1.0)),
+                share_backbone=bool(meta.get('share_backbone', False)),
+            )
+        # agvit removed from supported evaluation models
 
         if not os.path.exists(weight_path):
             print(f'Skip {name}: weight not found -> {weight_path}')
@@ -207,7 +280,14 @@ def run_evaluation(
 
         print(f'Evaluating {name} with weight: {weight_path}')
 
-        model.load_state_dict(torch.load(weight_path, map_location=device))
+        state_dict = torch.load(weight_path, map_location=device)
+        try:
+            model.load_state_dict(state_dict)
+        except RuntimeError:
+            if isinstance(state_dict, dict) and 'model_state_dict' in state_dict:
+                model.load_state_dict(state_dict['model_state_dict'])
+            else:
+                model.load_state_dict(state_dict, strict=False)
 
         model.to(device)
         model.eval()
@@ -352,7 +432,7 @@ def run_evaluation(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit', 'vit_fusion'], default=None)
+    parser.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit', 'vit_fusion', 'vit_two_road'], default=None)
     parser.add_argument('--dataset_subdir', default='dataset/ship_fine')
     parser.add_argument('--test_split', default='test')
     parser.add_argument('--batch_size', type=int, default=32)
@@ -364,6 +444,7 @@ def main():
     parser.add_argument('--file_suffix', default='')
     parser.add_argument('--seed', type=int, default=None)
     parser.add_argument('--vit_fusion_weight', default=None, help='optional explicit checkpoint path for vit_fusion')
+    parser.add_argument('--vit_two_road_weight', default=None, help='optional explicit checkpoint path for vit_two_road')
     args = parser.parse_args()
     run_evaluation(
         selected_models=args.models,
@@ -378,6 +459,7 @@ def main():
         file_suffix=args.file_suffix,
         seed=args.seed,
         vit_fusion_weight=args.vit_fusion_weight,
+        vit_two_road_weight=args.vit_two_road_weight,
     )
 
 

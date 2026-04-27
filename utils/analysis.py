@@ -59,7 +59,7 @@ def build_parser():
     sub = parser.add_subparsers(dest='command', required=True)
 
     p_eval = sub.add_parser('eval', help='Run evaluation and save preds/report/confusion matrix')
-    p_eval.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit', 'vit_fusion'], default=None)
+    p_eval.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit', 'vit_fusion', 'vit_two_road'], default=None)
     p_eval.add_argument('--dataset_subdir', default='dataset/ship_fine')
     p_eval.add_argument('--test_split', default='test')
     p_eval.add_argument('--batch_size', type=int, default=32)
@@ -73,14 +73,14 @@ def build_parser():
     p_eval.set_defaults(func=cmd_eval)
 
     p_vis = sub.add_parser('visuals', help='Generate visuals from preds csv')
-    p_vis.add_argument('--model', choices=['resnet', 'vgg', 'vit', 'vit_fusion'], required=True)
+    p_vis.add_argument('--model', choices=['resnet', 'vgg', 'vit', 'vit_fusion', 'vit_two_road'], required=True)
     p_vis.add_argument('--csv', required=True)
     p_vis.add_argument('--n', type=int, default=3)
     p_vis.add_argument('--out_dir', default=os.path.join(ROOT_DIR, 'outputs', 'visualizations', 'attention', 'default_eval'))
     p_vis.set_defaults(func=cmd_visuals)
 
     p_pipe = sub.add_parser('pipeline', help='Run eval then optional visuals')
-    p_pipe.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit', 'vit_fusion'], default=['resnet'])
+    p_pipe.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit', 'vit_fusion', 'vit_two_road'], default=['resnet'])
     p_pipe.add_argument('--visuals', action='store_true')
     p_pipe.add_argument('--n', type=int, default=3)
     p_pipe.add_argument('--out_dir', default=os.path.join(ROOT_DIR, 'outputs', 'visualizations', 'attention', 'default_eval'))

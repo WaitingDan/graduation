@@ -18,10 +18,10 @@ def run_cmd(cmd, cwd=ROOT_DIR):
 
 def parse_args():
     parser = argparse.ArgumentParser(description='One-click training + robustness evaluation pipeline')
-    parser.add_argument('--train_models', nargs='*', choices=['resnet', 'vgg', 'vit', 'vit_fusion'], default=[],
-                        help='models to train before robustness evaluation (default: none)')
-    parser.add_argument('--eval_models', nargs='+', choices=['resnet', 'vgg', 'vit', 'vit_fusion'],
-                        default=['resnet', 'vgg', 'vit', 'vit_fusion'],
+    parser.add_argument('--train_models', nargs='*', choices=['resnet', 'vgg', 'vit', 'vit_fusion', 'vit_two_road'], default=[],
+                            help='models to train before robustness evaluation (default: none)')
+    parser.add_argument('--eval_models', nargs='+', choices=['resnet', 'vgg', 'vit', 'vit_fusion', 'vit_two_road'],
+                            default=['resnet', 'vgg', 'vit', 'vit_fusion', 'vit_two_road'],
                         help='models included in occlusion robustness suite')
     parser.add_argument('--output_subdir', default=None, help='optional custom output root')
     parser.add_argument('--experiment_name', default='keypart_experiments', help='used when output_subdir is not provided')

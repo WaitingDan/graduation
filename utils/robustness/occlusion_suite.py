@@ -44,7 +44,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Run key-part occlusion robustness suite')
     parser.add_argument('--dataset_subdir', default='dataset/ship_fine')
     parser.add_argument('--test_split', default='test')
-    parser.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit', 'vit_fusion'], default=['resnet', 'vgg', 'vit', 'vit_fusion'])
+    parser.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit', 'vit_fusion', 'vit_two_road'], default=['resnet', 'vgg', 'vit', 'vit_fusion', 'vit_two_road'])
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--seeds', nargs='+', type=int, default=[42, 123, 3407])
@@ -58,6 +58,7 @@ def parse_args():
     parser.add_argument('--output_subdir', default=None, help='optional custom output root')
     parser.add_argument('--experiment_name', default='keypart_experiments', help='used when output_subdir is not provided')
     parser.add_argument('--vit_fusion_weight', default=None, help='optional explicit checkpoint path for vit_fusion during evaluation')
+    parser.add_argument('--vit_two_road_weight', default=None, help='optional explicit checkpoint path for vit_two_road during evaluation')
     parser.add_argument('--no_csv', action='store_true', help='do not save summary/agg csv files')
     return parser.parse_args()
 
@@ -155,6 +156,7 @@ def main():
                 file_suffix='',
                 seed=seed,
                 vit_fusion_weight=args.vit_fusion_weight,
+                vit_two_road_weight=args.vit_two_road_weight,
             )
             for item in metrics:
                 rows.append(build_row(item, scenario_name, seed, args, mode, level, occ_p, run_out_subdir))

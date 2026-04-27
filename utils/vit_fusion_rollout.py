@@ -13,7 +13,7 @@ sys.path.insert(0, ROOT_DIR)
 from models.vit_fusion_model import ViTFusionModel, get_attention_map
 
 
-def generate_fusion_rollout(image_path, weight_path=None, output_path=None, num_classes=None, gamma=1.0, alpha=0.6, device=None):
+def generate_fusion_rollout(image_path, weight_path=None, output_path=None, num_classes=None, gamma=1.0, alpha=0.6, rollout_layers=None, device=None):
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -42,7 +42,26 @@ def generate_fusion_rollout(image_path, weight_path=None, output_path=None, num_
     transform = transforms.Compose([transforms.ToTensor()])
     input_tensor = transform(img).unsqueeze(0).to(device)
 
-    model = ViTFusionModel(num_classes=num_classes, pretrained=False)
+    meta = {}
+    meta_path = None
+    if weight_path is not None:
+        meta_path = weight_path + '.meta.json'
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, 'r', encoding='utf-8') as f:
+                    meta = json.load(f)
+            except Exception:
+                meta = {}
+
+    model = ViTFusionModel(
+        num_classes=num_classes,
+        pretrained=False,
+        topk=int(meta.get('topk_patches', 3)),
+        attn_rollout_layers=int(meta.get('attn_rollout_layers', 3)),
+        use_part_self_attention=bool(meta.get('use_part_self_attention', meta.get('use_local_self_attention', False))),
+        part_gate_init=float(meta.get('part_gate_init', meta.get('local_gate_init', 1.0))),
+        part_dropout_p=float(meta.get('part_dropout_p', 0.15)),
+    )
     state = torch.load(weight_path, map_location=device)
     try:
         model.load_state_dict(state)
@@ -58,7 +77,8 @@ def generate_fusion_rollout(image_path, weight_path=None, output_path=None, num_
     model.eval()
 
     # get attention map from global_model
-    attn_map = get_attention_map(model.global_model, input_tensor)
+    selected_rollout_layers = int(meta.get('attn_rollout_layers', 3)) if rollout_layers is None else int(rollout_layers)
+    attn_map = get_attention_map(model.global_model, input_tensor, rollout_layers=selected_rollout_layers)
 
     # same processing as vit_attention_rollout
     mask = attn_map[0]
@@ -113,6 +133,7 @@ def parse_args():
     parser.add_argument('--num_classes', type=int, default=None)
     parser.add_argument('--gamma', type=float, default=1.0)
     parser.add_argument('--alpha', type=float, default=0.6)
+    parser.add_argument('--rollout_layers', type=int, default=None, help='Override the number of last ViT layers averaged for attention rollout')
     parser.add_argument('--device', default=None)
     return parser.parse_args()
 
@@ -127,6 +148,7 @@ def main():
         num_classes=args.num_classes,
         gamma=args.gamma,
         alpha=args.alpha,
+        rollout_layers=args.rollout_layers,
         device=device,
     )
     print('Saved:', path)

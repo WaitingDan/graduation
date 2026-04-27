@@ -142,7 +142,7 @@ def run_visuals(model, csv_path, n=3, out_dir=None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', choices=['resnet', 'vgg', 'vit', 'vit_fusion'], required=True)
+    parser.add_argument('--model', choices=['resnet', 'vgg', 'vit', 'vit_fusion', 'vit_two_road'], required=True)
     parser.add_argument('--csv', default=os.path.join(ROOT_DIR, 'outputs', 'preds_resnet.csv'))
     parser.add_argument('--n', type=int, default=3)
     parser.add_argument('--out_dir', default=os.path.join(ROOT_DIR, 'outputs', 'visualizations', 'attention', 'default_eval'))
