@@ -9,8 +9,8 @@
 1. 划分数据集（train/val/test）
   - 这一步的作用是把原始船舶图片拆成训练集、验证集和测试集，避免模型训练时看到测试集内容。
   - 训练集用于更新模型参数，验证集用于选最优权重，测试集只在最后做正式评估。
-3. 训练五个模型（resnet、vgg、vit、vit_fusion、vit_two_road）
-  - 这一步会分别训练五种网络，得到各自的权重文件。
+2. 训练四个模型（resnet、vgg、vit、vit_fusion）
+  - 这一步会分别训练四种网络，得到各自的权重文件。
   - 其中 `vit_fusion` 是你的主模型，当前为单分支 ViT 的轻量残差融合版。
 3. 运行鲁棒性评估（clean + light/medium/heavy）
   - 这一步会在无遮挡、轻度遮挡、中度遮挡和重度遮挡四种场景下测试模型。
@@ -29,15 +29,9 @@
 - `utils/split_dataset.py`
   - 把原始数据拆成 train/val/test。
   - 如果你的原始数据还没有划分，这个脚本是第一步。
--- `train/train_resnet.py`、`train/train_vgg.py`、`train/train_vit.py`、`train/train_vit_fusion.py`
+- `train/train_resnet.py`、`train/train_vgg.py`、`train/train_vit.py`、`train/train_vit_fusion.py`
   - 分别训练四个基础模型和主模型。
   - 这些脚本默认会保存最优权重到 `weights/`，并画训练曲线到 `outputs/`。
-- `train/train_two_road.py`（可选，双分支实验版）
-  - 用于训练带共享前端 `Conv(3x3)+BN+ReLU` 的双分支模型。
-  - 默认权重保存到 `weights/two_road/vit_two_road_best.pth`，曲线保存到 `outputs/two_road/`。
-- `models/two_road.py`（可选，双分支结构定义）
-  - 对应 `train/train_two_road.py` 的模型实现。
-  - 当前结构为“输入先过共享卷积前端，再分到 Local/Global 分支”。
 - `utils/robustness/occlusion_suite.py`
   - 在 clean 和不同遮挡强度下批量评估模型。
   - 它不会重新训练，只会读取已有权重。
@@ -117,38 +111,29 @@ python utils/split_dataset.py --dataset_subdir dataset/ship_fine --source FGSCR
 - `--source FGSCR` 表示原始数据来源目录名。
 - 运行结束后，你应该能在 `dataset/ship_fine/train`、`val`、`test` 下看到类别文件夹。
 
-### Step 2. 训练五个模型（clean 训练）
+### Step 2. 训练四个模型（clean 训练）
 
 clean 训练的意思是：训练时不人为加遮挡，模型先学会最基础的分类能力。
 这一阶段得到的模型通常是后续鲁棒性实验的起点。
 
 ```bash
 conda activate one
-python train/train_resnet.py --dataset_subdir dataset/ship_fine --epochs 50 --batch_size 32 --lr 2e-4 --weight_decay 1e-4 --label_smoothing 0.1 --train_occlusion_mode none --train_occlusion_p 0.0 --seed 42
-python train/train_vgg.py --dataset_subdir dataset/ship_fine --epochs 50 --batch_size 32 --lr 2e-4 --weight_decay 1e-4 --label_smoothing 0.1 --train_occlusion_mode none --train_occlusion_p 0.0 --seed 42
-python train/train_vit.py --dataset_subdir dataset/ship_fine --epochs 50 --batch_size 32 --lr 2e-4 --weight_decay 1e-4 --label_smoothing 0.1 --train_occlusion_mode none --train_occlusion_p 0.0 --seed 42
-<!-- agvit 已移除，相关训练命令已删除 -->
 #4月27训练所用指令
 python train/train_resnet.py --dataset_subdir dataset/ship_fine --epochs 30 --batch_size 32 --lr 2e-4 --weight_decay 1e-4 --label_smoothing 0.1 --train_occlusion_mode none --train_occlusion_p 0.0 --seed 42
 python train/train_vgg.py --dataset_subdir dataset/ship_fine --epochs 30 --batch_size 32 --lr 2e-4 --weight_decay 1e-4 --label_smoothing 0.1 --train_occlusion_mode none --train_occlusion_p 0.0 --seed 42
 python train/train_vit.py --dataset_subdir dataset/ship_fine --epochs 30 --batch_size 32 --lr 2e-4 --weight_decay 1e-4 --label_smoothing 0.1 --train_occlusion_mode none --train_occlusion_p 0.0 --seed 42
-python train/train_vit_fusion.py --dataset_subdir dataset/ship_fine --epochs 30 --batch_size 32 --lr_backbone 2e-5 --lr_head 2e-4 --weight_decay 1e-4 --label_smoothing 0.1 --train_occlusion_mode none --train_occlusion_p 0.0 --seed 42 --attn_rollout_layers 4 --attn_temperature 1.0 --part_gate_init 0.0 --part_dropout_p 0.1 --attn_sparse_weight 0.005 --fusion_modules abc
-
-# 可选：双分支实验版（two_road）
-python train/train_two_road.py --dataset_subdir dataset/ship_fine --epochs 30 --batch_size 32 --lr_backbone 4e-4 --lr_head 4e-4 --weight_decay 1e-4 --label_smoothing 0.0 --train_occlusion_mode none --train_occlusion_p 0.0 --seed 42 --share_backbone
+python train/train_vit_fusion.py --dataset_subdir dataset/ship_fine --epochs 30 --batch_size 32 --lr_backbone 2e-5 --lr_head 2e-4 --weight_decay 1e-4 --label_smoothing 0.1 --train_occlusion_mode none --train_occlusion_p 0.0 --seed 42 --attn_rollout_layers 4 --attn_temperature 1.0 --part_gate_init 0.0 --part_dropout_p 0.1 --attn_sparse_weight 0.005 --fusion_modules abc --weight_name ablation/vit_fusion_abc_best.pth
 ```
 
 说明：
 -- 为保证可复现，建议训练脚本统一使用同一个 seed。
 - 当前默认骨干：`resnet=resnet18 (timm)`、`vgg=vgg13 (timm)`、`vit=vit_small_patch16_224 (timm)`。
-<!-- agvit 已移除，相关说明已删除 -->
 - 这个版本不再依赖 `token drop`、`consistency loss` 或 `input stem`；主实验建议直接按上面的推荐命令训练。
 - `vit_fusion` 的推荐公平配置是 clean 训练 + 单分支关键 token 建模，默认无遮挡训练；如果你要做“更强鲁棒版”对照，再单独加遮挡增强。
 - `vit_fusion` 常用参数：`--attn_rollout_layers`、`--attn_temperature`、`--part_gate_init`、`--part_dropout_p`、`--attn_sparse_weight`。`--topk_patches` 仅保留为旧权重兼容参数，当前 soft pooling 不再依赖它筛选 token。`--use_part_self_attention` 只是兼容旧命令的开关，对当前轻量版主流程不再起作用。
 - `vit_fusion` 新增 `--fusion_modules` 用于控制模块开关：`a`（中层注意力重加权）、`b`（局部分支精炼）、`c`（融合门控）。例如 `--fusion_modules ab` 表示仅启用 A/B。
 - 当前推荐配置下，`attn_rollout_layers=4`、`attn_temperature=1.0`、`part_gate_init=0.0`、`part_dropout_p=0.1` 和 `attn_sparse_weight=0.005` 是稳健起点。
 - `vit_fusion` 当前主流程不依赖局部自注意力模块；`--use_part_self_attention` 仅作为旧命令兼容参数保留。
-- `vit_two_road` 若作为双分支对照，建议至少显式开启 `--share_backbone`，避免因参数量差异导致对比失真。
 - 如果你只是想复现主实验，直接用这些显式命令即可；如果你要做结构对比，再在此基础上加消融参数。
 
 训练结束后，一般会得到：
@@ -168,10 +153,8 @@ python utils/evaluate_models.py \
   --dataset_subdir dataset/ship_fine \
   --test_split test \
   --seed 42 \
-  --vit_fusion_weight weights/vit_fusion_best.pth \
+  --vit_fusion_weight weights/ablation/vit_fusion_abc_best.pth \
   --output_subdir outputs/evaluation/fusion_eval
-
-<!-- agvit 已移除，单模型评估示例中不再包含 agvit -->
 
 python utils/evaluate_models.py \
   --models vit \
@@ -193,14 +176,6 @@ python utils/evaluate_models.py \
   --test_split test \
   --seed 42 \
   --output_subdir outputs/evaluation/vgg_eval
-
-python utils/evaluate_models.py \
-  --models vit_two_road \
-  --dataset_subdir dataset/ship_fine \
-  --test_split test \
-  --seed 42 \
-  --vit_two_road_weight weights/two_road/vit_two_road_best.pth \
-  --output_subdir outputs/evaluation/two_road_eval
 ```
 
 说明：
@@ -217,9 +192,8 @@ conda activate one
 python train/train_vit_fusion.py --dataset_subdir dataset/ship_fine --epochs 30 --batch_size 32 --lr_backbone 2e-5 --lr_head 2e-4 --weight_decay 1e-4 --label_smoothing 0.1 --train_occlusion_mode none --train_occlusion_p 0.0 --seed 42 --attn_rollout_layers 4 --attn_temperature 1.0 --part_gate_init 0.0 --part_dropout_p 0.1 --attn_sparse_weight 0.005 --fusion_modules abc
 
 python utils/robustness/occlusion_suite.py \
-  --models resnet vgg vit vit_fusion vit_two_road \
-  --vit_fusion_weight weights/vit_fusion_best.pth \
-  --vit_two_road_weight weights/two_road/vit_two_road_best.pth \
+  --models resnet vgg vit vit_fusion  \
+  --vit_fusion_weight weights/ablation/vit_fusion_abc_best.pth \
   --seeds 42 123 3407 \
   --occlusion_mode mixed \
   --occlusion_levels light medium heavy \
@@ -238,12 +212,11 @@ python utils/visualization/robustness_plots.py \
 - clean 场景默认开启，所以不需要额外加 `--include_clean`。
 - 如果你只想看遮挡测试，可以显式加 `--no_include_clean`。
 - 该阶段不会重新训练模型，只会读取 `weights/` 里的权重文件。
--- `vit_two_road` 的默认权重位于 `weights/two_road/vit_two_road_best.pth`，通过 `--vit_two_road_weight` 显式传入即可。
--- `two_road` 与 `vit_fusion` 权重不需要互换路径，只要各自通过对应参数传入即可。
+- `vit_fusion` 的默认评估权重现在指向 `weights/ablation/vit_fusion_abc_best.pth`，如果你想临时切换别的 fusion 权重，可以显式传 `--vit_fusion_weight`。
 - 输出的聚合指标里包含 95% CI 字段，便于你在论文里说明不同 seed 下的波动范围。
 
 鲁棒性结果一般会输出三类东西：
-1. 原始测试结果：每个 seed、每个场景的 macro-F1 和 balanced accuracy。
+1. 原始测试结果：每个 seed、每个场景的 F1 和 balanced accuracy。
 2. 汇总结果：均值、标准差、95% CI。
 3. 排名结果：斜率、AUPC、clean->heavy 下降量和综合排序图。
 
@@ -262,7 +235,7 @@ python utils/visualization/robustness_plots.py \
 ```
 
 说明：
-- 显著性检验脚本默认比较 `vit_fusion` 与排名 top1 的模型；若你要单独检验双分支，请加 `--fusion_model vit_two_road`。
+- 显著性检验脚本默认比较 `vit_fusion` 与排名 top1 的模型。
 - 生成的图表和报告会保存到 `outputs/robustness/<experiment_name>/` 下面对应目录。
 
 ### Step 5.5 模块有效性对比（新增）
@@ -362,7 +335,7 @@ python utils/evaluate_models.py \
   --dataset_subdir dataset/ship_fine \
   --test_split test \
   --seed 42 \
-  --vit_fusion_weight weights/vit_fusion_best.pth \
+  --vit_fusion_weight weights/ablation/vit_fusion_abc_best.pth \
   --output_subdir outputs/evaluation/fusion_eval
 
 python utils/analysis.py visuals \
@@ -377,7 +350,7 @@ python utils/analysis.py visuals \
 ```bash
 python utils/vit_fusion_rollout.py \
   --image path/to/img.jpg \
-  --weights weights/vit_fusion_best.pth \
+  --weights weights/ablation/vit_fusion_abc_best.pth \
   --rollout_layers 3 \
   --output outputs/visualizations/attention/vit_fusion_rollout.png
 ```
@@ -491,12 +464,128 @@ python train/train_vit_fusion.py --dataset_subdir dataset/ship_fine --epochs 50 
 
 如果某个版本 clean 很高但 heavy 跌幅大，通常说明它对少数关键 token 依赖过强，需要提高 `part_dropout_p`、适度增大 `attn_rollout_layers`，或降低 `attn_temperature` 来让 soft pooling 更集中。
 
-## 10. 论文图与写作建议（精简）
+## 10. 论文图与写作建议（详细）
 
-建议主文至少包含：
-1. 综合排序图（fig01）：给出总体结论
-2. 均值±标准差曲线图（fig03）：展示退化趋势与稳定性
-3. clean/heavy 混淆矩阵对照（fig06）：解释错误迁移
+建议主文放入的图（并给出生成指令）：
+
+1. 数据分布图（类别样本数柱状图）
+```bash
+python scripts/plot_class_counts.py
+```
+
+2. 遮挡示意图（原图/条带/块状/混合）
+```bash
+python scripts/visualize_occlusions.py
+```
+
+3. 鲁棒性趋势曲线（F1 / 平衡准确率 均值±标准差）
+```bash
+python utils/visualization/paper_summary_plots.py --experiment_name keypart_experiments
+```
+输出：paper_fig_macro_balanced_curves.png
+
+4. 综合鲁棒性排序 + 指标拆解图（主结论图）
+```bash
+python utils/visualization/robustness_plots.py --experiment_name keypart_experiments
+```
+输出：robustness_ranking_visualization.png、robustness_composite_ranking.png
+
+5. 各类别 recall 下降热图（clean -> heavy）
+```bash
+python utils/visualization/paper_summary_plots.py --experiment_name keypart_experiments
+```
+输出：paper_fig_per_class_recall_drop_heatmap.png
+
+6. 混淆矩阵 2×2 拼图（seed=42，light/medium/heavy 三张）
+```bash
+python utils/visualization/paper_summary_plots.py --experiment_name keypart_experiments --seed_for_confmat 42
+```
+输出：
+- paper_fig_confmat_grid_mixed_light_seed42.png
+- paper_fig_confmat_grid_mixed_medium_seed42.png
+- paper_fig_confmat_grid_mixed_heavy_seed42.png
+
+7. 可解释性可视化（批量热力图 + 单图 rollout）
+
+7.1 批量热力图（主入口，推荐优先使用）
+
+```bash
+# 先分别导出各模型的预测 CSV（如果你还没有对应结果）
+python utils/evaluate_models.py \
+  --models resnet \
+  --dataset_subdir dataset/ship_fine \
+  --test_split test \
+  --seed 42 \
+  --output_subdir outputs/evaluation/resnet_eval
+python utils/evaluate_models.py \
+  --models vgg \
+  --dataset_subdir dataset/ship_fine \
+  --test_split test \
+  --seed 42 \
+  --output_subdir outputs/evaluation/vgg_eval
+python utils/evaluate_models.py \
+  --models vit \
+  --dataset_subdir dataset/ship_fine \
+  --test_split test \
+  --seed 42 \
+  --output_subdir outputs/evaluation/vit_eval
+python utils/evaluate_models.py \
+  --models vit_fusion \
+  --dataset_subdir dataset/ship_fine \
+  --test_split test \
+  --seed 42 \
+  --vit_fusion_weight weights/ablation/vit_fusion_abc_best.pth \
+  --output_subdir outputs/evaluation/fusion_eval
+
+# ResNet / VGG Grad-CAM（批量）
+python utils/gradcam_cnn_models.py --image path/to/img.jpg --model resnet --weights weights/resnet_best.pth --out_dir outputs/visualizations/attention
+python utils/gradcam_cnn_models.py --image path/to/img.jpg --model vgg --weights weights/vgg_best.pth --out_dir outputs/visualizations/attention
+
+# ViT 批量可视化
+python utils/analysis.py visuals \
+  --model vit \
+  --csv outputs/evaluation/vit_eval/preds_vit.csv \
+  --n 3 \
+  --out_dir outputs/visualizations/attention/vit_eval
+
+# ViT-Fusion 批量可视化
+python utils/analysis.py visuals \
+  --model vit_fusion \
+  --csv outputs/evaluation/fusion_eval/preds_vit_fusion.csv \
+  --weights weights/ablation/vit_fusion_abc_best.pth \
+  --n 3 \
+  --out_dir outputs/visualizations/attention/default_eval
+
+# 如果你想把四个模型都各自出一组图，建议分别执行上面的四段命令
+```
+
+7.2 单图 rollout（补充入口，适合调试与答辩展示）
+
+```bash
+# ViT rollout
+python utils/vit_attention_rollout.py --image dataset/ship_fine/test/018.Whitby_Island-class_dock_landing_ship/P5565.bmp --weights weights/vit_best.pth --output outputs/visualizations/attention/vit_rollout.png
+
+# ViT-Fusion rollout（注意权重使用 fusion 主实验权重）
+python utils/vit_fusion_rollout.py --image dataset/ship_fine/test/018.Whitby_Island-class_dock_landing_ship/P5565.bmp --weights weights/ablation/vit_fusion_abc_best.pth --output outputs/visualizations/attention/vit_fusion_rollout.png
+```
+
+说明：
+- `analysis.py visuals` 是常规批量热力图入口，适合从预测 CSV 中自动挑选多个样本做对比。
+- `ResNet / VGG` 用 `gradcam_cnn_models.py`，`ViT` 用 `analysis.py visuals --model vit`，`ViT-Fusion` 用 `analysis.py visuals --model vit_fusion --weights weights/ablation/vit_fusion_abc_best.pth`，这样四个模型会走各自正确的可视化路径。
+- `vit_attention_rollout.py` 和 `vit_fusion_rollout.py` 更适合单图调试或答辩展示。
+
+8. 效率/部署开销表（复杂度对比表）
+```bash
+python utils/report_efficiency.py --models resnet vgg vit vit_fusion --img_size 224 --batch_size 1 --warmup 20 --iters 100 --device auto
+```
+输出：outputs/evaluation/efficiency/efficiency_report.md
+
+配色说明（所有图一致）：
+- vit: 蓝色
+- vit_fusion(ABC): 红色
+- resnet: 橙色
+- vgg: 绿色
+- fusion(A)、fusion(AB): 使用红色同色调但更浅的区分色（用于消融图）
 
 写作注意：
 - 不要只报告综合分，需同时报告原始指标（macro_f1、balanced_accuracy、slope、AUPC）。

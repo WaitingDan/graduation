@@ -213,7 +213,7 @@ def write_md(path, rows):
     lines = []
     lines.append('# Robustness ranking (physical ratio calibrated)')
     lines.append('')
-    lines.append('| Rank | Model | macro-F1 slope/ratio | bal-acc slope/ratio | macro-F1 AUPC(norm) | bal-acc AUPC(norm) | macro-F1(clean->heavy drop) | bal-acc(clean->heavy drop) |')
+    lines.append('| Rank | Model | F1 slope/ratio | bal-acc slope/ratio | F1 AUPC(norm) | bal-acc AUPC(norm) | F1(clean->heavy drop) | bal-acc(clean->heavy drop) |')
     lines.append('|---:|---|---:|---:|---:|---:|---:|---:|')
 
     for row in rows:

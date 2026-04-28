@@ -67,7 +67,6 @@ def parse_args() -> argparse.Namespace:
     parser.set_defaults(fusion_use_part_self_attention=True)
     parser.add_argument("--fusion_part_gate_init", type=float, default=1.0)
     parser.add_argument("--fusion_part_dropout_p", type=float, default=0.15)
-    # agvit options removed
 
     parser.add_argument("--output_csv", default=os.path.join(ROOT_DIR, "outputs", "evaluation", "efficiency", "efficiency_report.csv"))
     parser.add_argument("--output_md", default=os.path.join(ROOT_DIR, "outputs", "evaluation", "efficiency", "efficiency_report.md"))
@@ -105,7 +104,6 @@ def build_model(model_name: str, num_classes: int, args: argparse.Namespace) -> 
         return create_vgg(num_classes=num_classes, pretrained=args.pretrained)
     if model_name == "vit":
         return create_vit(num_classes=num_classes, pretrained=args.pretrained)
-    # agvit removed from supported models
     if model_name == "vit_fusion":
         return ViTFusionModel(
             num_classes=num_classes,

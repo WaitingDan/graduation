@@ -8,6 +8,7 @@ import torch
 import math
 import torch.nn.functional as F
 from torchvision import transforms
+from utils.common import IMAGENET_MEAN, IMAGENET_STD
 
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
@@ -47,11 +48,14 @@ def generate_vit_rollout(
         output_path = os.path.join(ROOT_DIR, 'outputs', 'vit_attention_rollout.png')
 
     img = cv2.imread(image_path)
+    if img is None:
+        raise FileNotFoundError(f'Image not found: {image_path}')
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     img = cv2.resize(img, (224, 224))
 
     transform = transforms.Compose([
-        transforms.ToTensor()
+        transforms.ToTensor(),
+        transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
     ])
 
     input_tensor = transform(img).unsqueeze(0).to(device)

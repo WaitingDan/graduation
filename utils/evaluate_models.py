@@ -23,7 +23,6 @@ from models.vit_model import create_vit
 from models.resnet_model import create_resnet
 from models.vgg_model import create_vgg
 from models.vit_fusion_model import create_vit_global_local, ViTFusionModel
-from models.two_road import ViTFusionModel as ViTTwoRoadModel
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -98,18 +97,8 @@ def _resolve_weight_path(model_name, seed=None, explicit_path=None):
     if model_name == 'vit_fusion':
         candidates = []
         if seed_suffix is not None:
-            candidates.append(os.path.join(ROOT_DIR, f'weights/vit_fusion_best{seed_suffix}.pth'))
-        candidates.append(os.path.join(ROOT_DIR, 'weights/vit_fusion_best.pth'))
-        return _pick_first_existing(*candidates)
-
-    if model_name == 'vit_two_road':
-        candidates = []
-        if seed_suffix is not None:
-            candidates.append(os.path.join(ROOT_DIR, f'weights/two_road/vit_two_road_best{seed_suffix}.pth'))
-        candidates.extend([
-            os.path.join(ROOT_DIR, 'weights/two_road/vit_two_road_best.pth'),
-            os.path.join(ROOT_DIR, 'weights/vit_two_road_best.pth'),
-        ])
+            candidates.append(os.path.join(ROOT_DIR, f'weights/ablation/vit_fusion_abc_best{seed_suffix}.pth'))
+        candidates.append(os.path.join(ROOT_DIR, 'weights/ablation/vit_fusion_abc_best.pth'))
         return _pick_first_existing(*candidates)
 
     raise ValueError(f'Unknown model for weight resolution: {model_name}')
@@ -168,9 +157,6 @@ def _build_vit_fusion_model(num_classes, weight_path=None, fusion_modules_overri
     )
 
 
-# agvit builder removed; agvit is no longer supported in this codebase
-
-
 def run_evaluation(
     selected_models=None,
     dataset_subdir='dataset/ship_fine',
@@ -184,7 +170,6 @@ def run_evaluation(
     file_suffix='',
     seed=None,
     vit_fusion_weight=None,
-    vit_two_road_weight=None,
 ):
     set_seed(seed)
 
@@ -239,12 +224,6 @@ def run_evaluation(
             "model": None,
             "weight": _resolve_weight_path('vit_fusion', seed=seed, explicit_path=vit_fusion_weight)
         },
-
-        "vit_two_road": {
-            "model": None,
-            "weight": _resolve_weight_path('vit_two_road', seed=seed, explicit_path=vit_two_road_weight)
-        },
-
     }
 
     model_names = selected_models if selected_models else list(models.keys())
@@ -261,18 +240,6 @@ def run_evaluation(
         model = models[name]["model"]
         if name == 'vit_fusion':
             model = _build_vit_fusion_model(num_classes=num_classes, weight_path=weight_path)
-        elif name == 'vit_two_road':
-            meta = _load_weight_meta(weight_path)
-            model = ViTTwoRoadModel(
-                num_classes=num_classes,
-                pretrained=False,
-                topk=int(meta.get('topk_patches', 3)),
-                use_cross_attention=bool(meta.get('use_cross_attention', False)),
-                use_local_self_attention=bool(meta.get('use_local_self_attention', False)),
-                local_gate_init=float(meta.get('local_gate_init', 1.0)),
-                share_backbone=bool(meta.get('share_backbone', False)),
-            )
-        # agvit removed from supported evaluation models
 
         if not os.path.exists(weight_path):
             print(f'Skip {name}: weight not found -> {weight_path}')
@@ -432,7 +399,7 @@ def run_evaluation(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit', 'vit_fusion', 'vit_two_road'], default=None)
+    parser.add_argument('--models', nargs='+', choices=['resnet', 'vgg', 'vit', 'vit_fusion'], default=None)
     parser.add_argument('--dataset_subdir', default='dataset/ship_fine')
     parser.add_argument('--test_split', default='test')
     parser.add_argument('--batch_size', type=int, default=32)
@@ -444,7 +411,6 @@ def main():
     parser.add_argument('--file_suffix', default='')
     parser.add_argument('--seed', type=int, default=None)
     parser.add_argument('--vit_fusion_weight', default=None, help='optional explicit checkpoint path for vit_fusion')
-    parser.add_argument('--vit_two_road_weight', default=None, help='optional explicit checkpoint path for vit_two_road')
     args = parser.parse_args()
     run_evaluation(
         selected_models=args.models,
@@ -459,7 +425,6 @@ def main():
         file_suffix=args.file_suffix,
         seed=args.seed,
         vit_fusion_weight=args.vit_fusion_weight,
-        vit_two_road_weight=args.vit_two_road_weight,
     )
 
 

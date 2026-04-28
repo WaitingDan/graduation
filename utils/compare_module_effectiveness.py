@@ -26,7 +26,6 @@ from torchvision import datasets
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT_DIR)
 
-from models.two_road import ViTFusionModel as ViTTwoRoadModel
 from models.resnet_model import create_resnet
 from models.vgg_model import create_vgg
 from models.vit_model import create_vit
@@ -45,7 +44,36 @@ SCENARIO_LEVELS = {
     "heavy": "heavy",
 }
 
-MODEL_CHOICES = ["resnet", "vgg", "vit", "vit_fusion", "vit_two_road"]
+MODEL_CHOICES = ["resnet", "vgg", "vit", "vit_fusion"]
+
+
+# Unified palette for all plots (CV-paper style)
+MODEL_COLORS = {
+    "vit": "#1f77b4",        # blue
+    "vit_fusion": "#d62728", # red
+    "resnet": "#ff7f0e",     # orange
+    "vgg": "#2ca02c",        # green
+}
+
+# Ablation variants: same red tone with clear separation
+VARIANT_COLORS = {
+    "baseline": "#1f77b4",  # baseline (usually vit)
+    "a": "#2ca02c",
+    "ab": "#ff7f0e",
+    "abc": "#d62728",
+    "+a": "#2ca02c",
+    "+a+b": "#ff7f0e",
+    "+a+b+c": "#d62728",
+}
+
+
+def _label_color(label):
+    key = str(label).strip().lower()
+    if key in VARIANT_COLORS:
+        return VARIANT_COLORS[key]
+    if key in MODEL_COLORS:
+        return MODEL_COLORS[key]
+    return "#7f7f7f"
 
 
 def set_seed(seed):
@@ -73,17 +101,6 @@ def build_model(model_name, num_classes, weight_path, fusion_modules=None):
             num_classes=num_classes,
             weight_path=weight_path,
             fusion_modules_override=fusion_modules,
-        )
-    if model_name == "vit_two_road":
-        meta = _load_weight_meta(weight_path)
-        return ViTTwoRoadModel(
-            num_classes=num_classes,
-            pretrained=False,
-            topk=int(meta.get("topk_patches", 3)),
-            use_cross_attention=bool(meta.get("use_cross_attention", False)),
-            use_local_self_attention=bool(meta.get("use_local_self_attention", False)),
-            local_gate_init=float(meta.get("local_gate_init", 1.0)),
-            share_backbone=bool(meta.get("share_backbone", False)),
         )
     raise ValueError(f"Unsupported model: {model_name}")
 
@@ -452,7 +469,14 @@ def _plot_variant_means(summary_rows, plot_metrics, output_path, scenario_order)
             for sc in scenarios:
                 row = index.get((label, sc), {})
                 vals.append(float(row.get(f"{metric}_mean", np.nan)))
-            ax.bar(x + (i - (len(labels) - 1) / 2) * width, vals, width=width, label=label)
+            color = _label_color(label)
+            ax.bar(
+                x + (i - (len(labels) - 1) / 2) * width,
+                vals,
+                width=width,
+                label=label,
+                color=color,
+            )
 
         ax.set_title(metric)
         ax.set_xticks(x)
@@ -465,6 +489,246 @@ def _plot_variant_means(summary_rows, plot_metrics, output_path, scenario_order)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     fig.savefig(output_path, dpi=200)
     plt.close(fig)
+
+
+def _plot_variant_radar(summary_rows, radar_metrics, output_path):
+    """Draw a radar chart comparing variants.
+
+    summary_rows: list of dicts produced by `aggregate`, each with keys like
+      'model', 'scenario', '<metric>_mean'
+    radar_metrics: list of metric keys to plot (strings, without _mean)
+    """
+    # collect labels (variants)
+    labels = sorted({row["model"] for row in summary_rows})
+    if not labels or not radar_metrics:
+        return
+
+    # compute overall mean across scenarios for each label
+    index = defaultdict(list)
+    for r in summary_rows:
+        label = r["model"]
+        for m in radar_metrics:
+            val = r.get(f"{m}_mean", float('nan'))
+            try:
+                v = float(val)
+            except Exception:
+                v = float('nan')
+            index[(label, m)].append(v)
+
+    data = {}
+    for label in labels:
+        vals = []
+        for m in radar_metrics:
+            arr = [v for v in index.get((label, m), []) if not np.isnan(v)]
+            mean_v = float(np.mean(arr)) if arr else float('nan')
+            # clamp to [0,1]
+            if np.isnan(mean_v):
+                mean_v = 0.0
+            mean_v = max(0.0, min(1.0, mean_v))
+            vals.append(mean_v)
+        data[label] = vals
+
+    # radar setup
+    N = len(radar_metrics)
+    angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
+    angles += angles[:1]
+
+    fig = plt.figure(figsize=(6, 6))
+    ax = fig.add_subplot(111, polar=True)
+
+    # draw one polygon per label
+    for label in labels:
+        vals = data[label]
+        values = vals + vals[:1]
+        color = _label_color(label)
+        ax.plot(angles, values, linewidth=2, label=label, color=color)
+        ax.fill(angles, values, alpha=0.15, color=color)
+
+    # set category labels
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(radar_metrics)
+    ax.set_yticks([0.0, 0.25, 0.5, 0.75, 1.0])
+    ax.set_ylim(0.0, 1.0)
+    ax.set_title('Ablation Variants Radar (mean across seeds & scenarios)')
+    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.05))
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    fig.savefig(output_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+
+
+def _plot_variant_radar_per_scenario(summary_rows, radar_metrics, output_dir, scenario_order):
+    """Draw radar charts per scenario and save one file per scenario.
+
+    summary_rows: list of dicts with keys 'model','scenario','<metric>_mean'
+    radar_metrics: list of metric keys to plot (no '_mean')
+    output_dir: directory to save per-scenario radar images
+    scenario_order: list of scenario names to plot (e.g., ['clean','mixed_light',...])
+    """
+    labels = sorted({row["model"] for row in summary_rows})
+    if not labels or not radar_metrics:
+        return
+
+    # index by (model, scenario) -> mean values
+    index = {(r["model"], r["scenario"]): r for r in summary_rows}
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # ensure matplotlib can render Chinese by reusing project's font helper
+    try:
+        from utils.visualization.robustness_plots import configure_matplotlib_cjk_font, _apply_mixed_font_rules
+        zh_font, en_font = configure_matplotlib_cjk_font(preferred_font=None)
+    except Exception:
+        zh_font = None
+        en_font = None
+
+    for scenario in scenario_order:
+        # collect values per label for this scenario
+        data = {}
+        for label in labels:
+            vals = []
+            row = index.get((label, scenario), {})
+            for m in radar_metrics:
+                v = row.get(f"{m}_mean", float('nan'))
+                try:
+                    v = float(v)
+                except Exception:
+                    v = float('nan')
+                if np.isnan(v):
+                    v = 0.0
+                v = max(0.0, min(1.0, v))
+                vals.append(v)
+            data[label] = vals
+
+        # radar setup
+        # mapping of preferred angles for each metric
+        angle_map = {
+            'macro_f1': np.pi / 2.0,        # top
+            'accuracy': np.pi,              # left
+            'map_macro_ovr': 3.0 * np.pi / 2.0,  # bottom
+            'macro_recall': 0.0,            # right (0 == 2pi)
+        }
+
+        # produce sorted metric order by increasing angle to ensure convex polygon
+        metric_angle_pairs = [(m, float(angle_map.get(m, 0.0))) for m in radar_metrics]
+        metric_angle_pairs.sort(key=lambda x: x[1])
+        sorted_metrics = [m for m, _ in metric_angle_pairs]
+        angles = [a for _, a in metric_angle_pairs]
+        angles += angles[:1]
+
+        fig = plt.figure(figsize=(6, 6))
+        ax = fig.add_subplot(111, polar=True)
+
+        # determine legend/display ordering: baseline first, then +A, +A+B, +A+B+C
+        baseline_label = None
+        for lab in labels:
+            if lab.lower() == 'baseline':
+                baseline_label = lab
+                break
+        if baseline_label is None:
+            baseline_label = labels[0]
+        others = [l for l in labels if l != baseline_label]
+        others_sorted = sorted(others, key=lambda x: len(x))
+        ordered_labels = [baseline_label] + others_sorted
+
+        def display_label_from_variant(lab):
+            s = lab.lower()
+            if lab == baseline_label or s == 'baseline':
+                return 'baseline'
+            if s in ('a', '+a'):
+                return '+A'
+            if s in ('ab', 'a+b', 'a_b'):
+                return '+A+B'
+            if s in ('abc', 'a+b+c', 'a_b_c'):
+                return '+A+B+C'
+            return lab
+
+        # plot each variant in order
+        for label in ordered_labels:
+            vals = [data[label][radar_metrics.index(m)] for m in sorted_metrics]
+            values = vals + vals[:1]
+            color = _label_color(label)
+            ax.plot(angles, values, linewidth=2, label=display_label_from_variant(label), color=color)
+            ax.fill(angles, values, alpha=0.12, color=color)
+
+        # set custom tick labels according to sorted_metrics
+        display_names = {
+            'accuracy': 'Accuracy',
+            'macro_recall': 'Recall',
+            'macro_f1': 'F1',
+            'map_macro_ovr': 'mAP',
+        }
+        xtick_labels = [display_names.get(m, m) for m in sorted_metrics]
+        ax.set_xticks(angles[:-1])
+        ax.set_xticklabels(xtick_labels)
+        # push axis labels outward so left/right labels do not overlap the outer ring
+        ax.tick_params(axis='x', pad=18)
+
+        # radial ticks: 0.85..1.00, hide center label
+        ax.set_yticks([0.85, 0.90, 0.95, 1.00])
+        ax.set_yticklabels(['0.85', '0.90', '0.95', '1.00'])
+        ax.set_ylim(0.84, 1.0)
+
+        # Chinese title per scenario
+        title_map = {
+            'clean': '无遮挡',
+            'mixed_light': '轻度遮挡',
+            'mixed_medium': '中度遮挡',
+            'mixed_heavy': '重度遮挡',
+        }
+        pretty_scenario = title_map.get(scenario, scenario)
+        ax.set_title(f'消融实验雷达图 - {pretty_scenario}', y=1.16)
+
+        # ensure Chinese font applied if available
+        try:
+            if zh_font:
+                _apply_mixed_font_rules(fig, zh_font=zh_font, en_font=en_font, size_pt=10)
+        except Exception:
+            pass
+
+        ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.05))
+
+        out_file = os.path.join(output_dir, f"ablation_variant_radar_{scenario}.png")
+        fig.savefig(out_file, dpi=200, bbox_inches='tight')
+        plt.close(fig)
+
+        # draw a three-line table image (booktabs-like)
+        table_cols = [display_names.get(m, m) for m in sorted_metrics]
+        table_rows = []
+        for lab in ordered_labels:
+            vals = [data[lab][radar_metrics.index(m)] for m in sorted_metrics]
+            table_rows.append([f"{v:.4f}" for v in vals])
+
+        fig, ax = plt.subplots(figsize=(6, 1.2 + 0.5 * len(ordered_labels)))
+        ax.axis('off')
+        the_table = ax.table(cellText=table_rows, colLabels=table_cols, rowLabels=[display_label_from_variant(l) for l in ordered_labels], loc='center')
+        the_table.auto_set_font_size(False)
+        the_table.set_fontsize(10)
+        the_table.scale(1, 1.2)
+
+        # draw three horizontal lines: top, after header, bottom
+        cells = the_table.get_celld()
+        ys = [cell.get_y() for cell in cells.values()]
+        y_min = min(ys)
+        y_max = max(ys)
+        # header bottom: find min y among header cells (row 0)
+        header_ys = [cell.get_y() for key, cell in cells.items() if key[0] == 0]
+        header_bottom = min(header_ys) if header_ys else y_max - 0.1
+
+        # convert table coords to axis coords and draw lines
+        ax.plot([0, 1], [y_max + 0.0, y_max + 0.0], transform=ax.transAxes, color='black', linewidth=1.2)
+        ax.plot([0, 1], [header_bottom, header_bottom], transform=ax.transAxes, color='black', linewidth=0.8)
+        ax.plot([0, 1], [y_min - 0.0, y_min - 0.0], transform=ax.transAxes, color='black', linewidth=1.2)
+
+        try:
+            if zh_font:
+                _apply_mixed_font_rules(fig, zh_font=zh_font, en_font=en_font, size_pt=10)
+        except Exception:
+            pass
+
+        out_table = os.path.join(output_dir, f"ablation_variant_table_{scenario}.png")
+        fig.savefig(out_table, dpi=200, bbox_inches='tight')
+        plt.close(fig)
 
 
 def _run_variant_mode(args, metric_keys, output_root):
@@ -551,11 +815,13 @@ def _run_variant_mode(args, metric_keys, output_root):
 
     write_csv(os.path.join(output_root, "ablation_vs_baseline_deltas.csv"), delta_rows)
 
+    # additionally draw radar comparing core metrics averaged across seeds and scenarios
+    radar_metrics = ["accuracy", "macro_recall", "macro_f1", "map_macro_ovr"]
     scenario_order = [_scenario_cfg(args, lv)[0] for lv in args.levels]
-    _plot_variant_means(
+    _plot_variant_radar_per_scenario(
         summary_rows,
-        plot_metrics=args.plot_metrics,
-        output_path=os.path.join(output_root, "ablation_variant_means.png"),
+        radar_metrics=radar_metrics,
+        output_dir=os.path.join(output_root),
         scenario_order=scenario_order,
     )
 

@@ -10,6 +10,7 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 import sys
 sys.path.insert(0, ROOT_DIR)
 
+from utils.common import IMAGENET_MEAN, IMAGENET_STD
 from models.vit_fusion_model import ViTFusionModel, get_attention_map
 
 
@@ -28,7 +29,7 @@ def generate_fusion_rollout(image_path, weight_path=None, output_path=None, num_
             num_classes = 10
 
     if weight_path is None:
-        weight_path = os.path.join(ROOT_DIR, 'weights', 'vit_fusion_best.pth')
+        weight_path = os.path.join(ROOT_DIR, 'weights', 'ablation', 'vit_fusion_abc_best.pth')
 
     if output_path is None:
         output_path = os.path.join(ROOT_DIR, 'outputs', 'vit_fusion_attention.png')
@@ -39,7 +40,10 @@ def generate_fusion_rollout(image_path, weight_path=None, output_path=None, num_
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     img = cv2.resize(img, (224, 224))
 
-    transform = transforms.Compose([transforms.ToTensor()])
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+    ])
     input_tensor = transform(img).unsqueeze(0).to(device)
 
     meta = {}
@@ -56,29 +60,63 @@ def generate_fusion_rollout(image_path, weight_path=None, output_path=None, num_
     model = ViTFusionModel(
         num_classes=num_classes,
         pretrained=False,
-        topk=int(meta.get('topk_patches', 3)),
-        attn_rollout_layers=int(meta.get('attn_rollout_layers', 3)),
+        topk=int(meta.get('topk_patches', 6)),
+        attn_rollout_layers=int(meta.get('attn_rollout_layers', 4)),
         use_part_self_attention=bool(meta.get('use_part_self_attention', meta.get('use_local_self_attention', False))),
-        part_gate_init=float(meta.get('part_gate_init', meta.get('local_gate_init', 1.0))),
-        part_dropout_p=float(meta.get('part_dropout_p', 0.15)),
+        part_gate_init=float(meta.get('part_gate_init', meta.get('local_gate_init', 0.0))),
+        part_dropout_p=float(meta.get('part_dropout_p', 0.1)),
+        attn_temperature=float(meta.get('attn_temperature', 1.0)),
+        entropy_penalty=float(meta.get('entropy_penalty', 0.5)),
+        enable_module_a=bool(meta.get('enable_module_a', True)),
+        enable_module_b=bool(meta.get('enable_module_b', True)),
+        enable_module_c=bool(meta.get('enable_module_c', True)),
+        split_layer=int(meta.get('split_layer', 8)),
+        mid_reweight_temperature=float(meta.get('mid_reweight_temperature', 1.0)),
     )
     state = torch.load(weight_path, map_location=device)
+    # support various checkpoint formats
+    state_dict = None
+    if isinstance(state, dict):
+        for key in ('state_dict', 'model_state_dict', 'model', 'state'):
+            if key in state and isinstance(state[key], dict):
+                state_dict = state[key]
+                break
+        if state_dict is None:
+            # maybe the dict already is a state dict (string keys -> tensors)
+            # heuristics: check for e.g. 'backbone' or 'classifier' keys or any tensor value
+            sample_keys = list(state.keys())[:5]
+            if any(isinstance(state[k], torch.Tensor) for k in sample_keys):
+                state_dict = state
+    else:
+        state_dict = state
+
+    if state_dict is None:
+        raise RuntimeError(f'Unable to locate state_dict in checkpoint: {weight_path}')
+
     try:
-        model.load_state_dict(state)
+        model.load_state_dict(state_dict)
     except RuntimeError:
-        # try loading by matching keys (support common save formats)
-        if 'model_state_dict' in state:
-            model.load_state_dict(state['model_state_dict'])
-        else:
-            # attempt strict=False to load partial weights
-            model.load_state_dict(state, strict=False)
+        # try non-strict load to be tolerant to minor key mismatches
+        model.load_state_dict(state_dict, strict=False)
 
     model.to(device)
     model.eval()
 
-    # get attention map from global_model
-    selected_rollout_layers = int(meta.get('attn_rollout_layers', 3)) if rollout_layers is None else int(rollout_layers)
-    attn_map = get_attention_map(model.global_model, input_tensor, rollout_layers=selected_rollout_layers)
+    # IMPORTANT: for fusion, visualize the rollout_score that actually participates in
+    # mid-layer reweighting / pooling (not the plain ViT backbone attention).
+    with torch.no_grad():
+        if hasattr(model, '_forward_with_attn'):
+            old_layers = None
+            if rollout_layers is not None:
+                old_layers = getattr(model, 'attn_rollout_layers', None)
+                model.attn_rollout_layers = int(rollout_layers)
+            _final_tokens, rollout_score = model._forward_with_attn(input_tensor)
+            if old_layers is not None:
+                model.attn_rollout_layers = old_layers
+            attn_map = rollout_score
+        else:
+            selected_rollout_layers = int(meta.get('attn_rollout_layers', 4)) if rollout_layers is None else int(rollout_layers)
+            attn_map = get_attention_map(model.global_model, input_tensor, rollout_layers=selected_rollout_layers)
 
     # same processing as vit_attention_rollout
     mask = attn_map[0]

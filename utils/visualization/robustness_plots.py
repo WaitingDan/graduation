@@ -32,16 +32,13 @@ def ensure_layout_dirs(root_dir, layout):
         os.makedirs(os.path.join(root_dir, rel), exist_ok=True)
 
 
-# A more publication-friendly, colorblind-safe palette. ``vit_fusion`` uses
-# a distinct accent color and will be further highlighted in the plotting
-# code (thicker edge / full opacity) so it stands out in figures.
+# Publication-friendly palette (consistent across all plots).
+# vit -> blue, vit_fusion(ABC) -> red, resnet -> orange, vgg -> green
 MODEL_COLORS = {
-    'vit': '#4C78A8',        # muted blue
-    'resnet': '#F58518',     # warm orange
-    'vit_fusion': '#7E2F8E', # accent purple (highlighted)
-    'vgg': '#54A24B',        # muted green
-    'vit_two_road': '#E45756', # dual-branch red
-    # 'agvit': '#17BECF',      # cyan (removed)
+    'vit': '#1f77b4',        # blue
+    'vit_fusion': '#d62728', # red
+    'resnet': '#ff7f0e',     # orange
+    'vgg': '#2ca02c',        # green
 }
 
 
@@ -288,19 +285,16 @@ def plot_robustness_ranking(data, output_dir):
     acc_aupc = np.asarray(data.get('balanced_acc_aupc_norm') or [0.0] * len(data['model']), dtype=float)
     aupc_avg = (f1_aupc + acc_aupc) / 2.0
 
-    # create a complete 3x2 grid (6 panels)
-    fig, axes = plt.subplots(3, 2, figsize=(16, 12))
-    fig.suptitle('鲁棒性指标比较', fontsize=PAPER_FONT_SIZE_PT, fontweight='bold', y=0.985)
+    # create a compact 2x2 grid: top row = drop metrics, bottom row = slope metrics
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle('鲁棒性指标比较', fontsize=PAPER_FONT_SIZE_PT, fontweight='bold', y=0.98)
 
-    composite_raw = np.asarray(details['composite'])
-
+    # order of panels: top-left F1 drop, top-right Acc drop, bottom-left |F1 slope|, bottom-right |Acc slope|
     chart_items = [
-        ('|macro-F1 斜率|（越小越好）', np.abs(np.asarray(data['macro_f1_slope']))),
-        ('|balanced-acc 斜率|（越小越好）', np.abs(np.asarray(data['balanced_acc_slope']))),
-        ('macro-F1 从 clean 到 heavy 的下降量（越小越好）', np.asarray(data['macro_f1_drop'])),
-        ('balanced-acc 从 clean 到 heavy 的下降量（越小越好）', np.asarray(data['balanced_acc_drop'])),
-        ('综合鲁棒性相对指数（越大越好）', composite_raw),
-        ('AUPC(norm)（越大越好）', aupc_avg),
+        ('F1 从 clean 到 heavy 的下降量（越小越好）', np.asarray(data['macro_f1_drop'])),
+        ('平衡准确率 从 clean 到 heavy 的下降量（越小越好）', np.asarray(data['balanced_acc_drop'])),
+        ('|F1 斜率|（越小越好）', np.abs(np.asarray(data['macro_f1_slope']))),
+        ('|平衡准确率 斜率|（越小越好）', np.abs(np.asarray(data['balanced_acc_slope']))),
     ]
 
     flat_axes = axes.flatten()
@@ -322,9 +316,11 @@ def plot_robustness_ranking(data, output_dir):
         x_max = float(np.max(sorted_values)) if len(sorted_values) else 1.0
         x_pad = max(0.03, x_max * 0.18)
         ax.set_xlim([0.0, x_max + x_pad])
-        for i, (bar, val) in enumerate(zip(bars, sorted_values)):
-            text_x = min(val + x_pad * 0.2, x_max + x_pad * 0.92)
-            ax.text(text_x, i, f'{val:.4f}', va='center', fontsize=PAPER_FONT_SIZE_PT)
+        # place numeric labels at the end of bars
+        for bar, val in zip(bars, sorted_values):
+            text_x = val + x_pad * 0.08
+            y_pos = bar.get_y() + bar.get_height() / 2.0
+            ax.text(text_x, y_pos, f'{val:.4f}', va='center', fontsize=PAPER_FONT_SIZE_PT)
 
     zh_font = getattr(plot_robustness_ranking, 'zh_font', None)
     en_font = getattr(plot_robustness_ranking, 'en_font', 'Times New Roman')

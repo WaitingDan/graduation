@@ -10,6 +10,7 @@ if ROOT_DIR not in sys.path:
 
 from utils.gradcam_cnn_models import generate_gradcam
 from utils.vit_attention_rollout import generate_vit_rollout
+from utils.vit_fusion_rollout import generate_fusion_rollout
 
 
 def read_preds(csv_path):
@@ -63,7 +64,40 @@ def call_vit_rollout(image_path, weights=None, out_dir=None):
     return saved
 
 
-def run_visuals(model, csv_path, n=3, out_dir=None):
+def call_fusion_rollout(image_path, weights=None, out_dir=None):
+    out_file = None
+    if out_dir:
+        out_file = os.path.join(out_dir, os.path.basename(image_path).replace('.', '_') + '_vit_fusion.png')
+    saved = generate_fusion_rollout(
+        image_path=image_path,
+        weight_path=weights,
+        output_path=out_file,
+    )
+    return saved
+
+
+def resolve_default_weights(model, weights=None):
+    if weights:
+        return weights
+
+    defaults = {
+        'resnet': os.path.join(ROOT_DIR, 'weights', 'resnet_best.pth'),
+        'vgg': os.path.join(ROOT_DIR, 'weights', 'vgg_best.pth'),
+        'vit': os.path.join(ROOT_DIR, 'weights', 'vit_best.pth'),
+        'vit_fusion': os.path.join(ROOT_DIR, 'weights', 'ablation', 'vit_fusion_abc_best.pth'),
+    }
+    if model == 'vit_fusion' and not os.path.exists(defaults[model]):
+        fallback_paths = [
+            os.path.join(ROOT_DIR, 'weights', 'rank2', 'vit_fusion_best.pth'),
+            os.path.join(ROOT_DIR, 'weights', 'vit_fusion_best.pth'),
+        ]
+        for path in fallback_paths:
+            if os.path.exists(path):
+                return path
+    return defaults.get(model, weights)
+
+
+def run_visuals(model, csv_path, n=3, out_dir=None, weights=None):
     if out_dir is None:
         out_dir = os.path.join(ROOT_DIR, 'outputs', 'visualizations', 'attention', 'default_eval')
 
@@ -81,6 +115,8 @@ def run_visuals(model, csv_path, n=3, out_dir=None):
     high_conf_correct, low_conf_incorrect, high_conf_incorrect = select_examples(rows, n=n)
 
     print('Selected: high_conf_correct', len(high_conf_correct), 'low_conf_incorrect', len(low_conf_incorrect), 'high_conf_incorrect', len(high_conf_incorrect))
+
+    weights = resolve_default_weights(model, weights)
 
     # process each selected image and record manifest
     manifest = []
@@ -107,7 +143,7 @@ def run_visuals(model, csv_path, n=3, out_dir=None):
                         saved = new_path
                     except Exception:
                         pass
-            else:
+            elif model == 'vit':
                 saved = call_vit_rollout(img_path, out_dir=out_dir)
                 if saved and os.path.exists(saved):
                     new_name = f"{tag}_{model}_{base}_t{true_idx}_p{pred_idx}_{prob:.3f}.png"
@@ -117,6 +153,18 @@ def run_visuals(model, csv_path, n=3, out_dir=None):
                         saved = new_path
                     except Exception:
                         pass
+            elif model == 'vit_fusion':
+                saved = call_fusion_rollout(img_path, weights=weights, out_dir=out_dir)
+                if saved and os.path.exists(saved):
+                    new_name = f"{tag}_{model}_{base}_t{true_idx}_p{pred_idx}_{prob:.3f}.png"
+                    new_path = os.path.join(out_dir, new_name)
+                    try:
+                        os.replace(saved, new_path)
+                        saved = new_path
+                    except Exception:
+                        pass
+            else:
+                raise ValueError(f'Unsupported model for visuals: {model}')
 
             manifest.append({
                 'tag': tag,
@@ -142,13 +190,14 @@ def run_visuals(model, csv_path, n=3, out_dir=None):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', choices=['resnet', 'vgg', 'vit', 'vit_fusion', 'vit_two_road'], required=True)
+    parser.add_argument('--model', choices=['resnet', 'vgg', 'vit', 'vit_fusion'], required=True)
     parser.add_argument('--csv', default=os.path.join(ROOT_DIR, 'outputs', 'preds_resnet.csv'))
     parser.add_argument('--n', type=int, default=3)
     parser.add_argument('--out_dir', default=os.path.join(ROOT_DIR, 'outputs', 'visualizations', 'attention', 'default_eval'))
+    parser.add_argument('--weights', default=None, help='Optional model weights for vit / vit_fusion visualizations')
     args = parser.parse_args()
 
-    run_visuals(model=args.model, csv_path=args.csv, n=args.n, out_dir=args.out_dir)
+    run_visuals(model=args.model, csv_path=args.csv, n=args.n, out_dir=args.out_dir, weights=args.weights)
 
 
 if __name__ == '__main__':

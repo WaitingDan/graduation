@@ -33,7 +33,7 @@ def parse_args():
     parser.add_argument("--output_subdir", default=None, help="optional custom robustness root")
     parser.add_argument("--experiment_name", default="keypart_experiments", help="robustness experiment name")
     parser.add_argument("--occlusion_mode", choices=["block", "stripe", "mixed"], default="mixed")
-    parser.add_argument("--models", nargs="+", default=["resnet", "vgg", "vit", "vit_fusion", "vit_two_road"])
+    parser.add_argument("--models", nargs="+", default=["resnet", "vgg", "vit", "vit_fusion"])
     parser.add_argument("--seed_for_confmat", type=int, default=42, help="seed used in clean/heavy confusion matrix comparison")
     parser.add_argument("--font_family", default=None, help="optional matplotlib font family for Chinese labels")
     return parser.parse_args()
@@ -191,7 +191,6 @@ def plot_curve_with_errorbars(curve_rows, out_png, models):
         "resnet": "#ff7f0e",
         "vit_fusion": "#2ca02c",
         "vgg": "#d62728",
-        "vit_two_road": "#9467bd",
     }
 
     by_model = defaultdict(list)
@@ -382,7 +381,6 @@ def plot_seed_variance_panels(seed_rows, models, out_png):
         "resnet": "#ff7f0e",
         "vit_fusion": "#2ca02c",
         "vgg": "#d62728",
-        "vit_two_road": "#9467bd",
     }
 
     grouped = defaultdict(lambda: defaultdict(list))

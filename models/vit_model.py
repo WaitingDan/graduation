@@ -61,5 +61,3 @@ def create_vit(num_classes, pretrained=True):
             raise RuntimeError('Failed to replace ViT classifier head')
 
     return model
-# Note: Attention-guided ViT (agvit) implementation removed per project decision.
-# If you need to restore it later, retrieve it from version control history.
