@@ -16,24 +16,7 @@ INTENSITY_MAP = {
     'heavy': 0.35,
 }
 
-
-
-def get_robustness_layout(output_subdir=None, experiment_name='keypart_experiments'):
-    root = output_subdir or os.path.join('outputs', 'robustness', experiment_name)
-    return {
-        'root': root,
-        'runs': os.path.join(root, 'runs'),
-        'metrics': os.path.join(root, 'metrics'),
-        'ranking': os.path.join(root, 'ranking'),
-        'plots': os.path.join(root, 'plots'),
-        'reports': os.path.join(root, 'reports'),
-        'visuals': os.path.join(root, 'visuals'),
-    }
-
-
-def ensure_layout_dirs(root_dir, layout):
-    for rel in layout.values():
-        os.makedirs(os.path.join(root_dir, rel), exist_ok=True)
+from utils.output_layout import get_robustness_layout, ensure_layout_dirs
 
 
 def parse_args():

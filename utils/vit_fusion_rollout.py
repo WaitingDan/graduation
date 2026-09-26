@@ -32,7 +32,7 @@ def generate_fusion_rollout(image_path, weight_path=None, output_path=None, num_
         weight_path = os.path.join(ROOT_DIR, 'weights', 'ablation', 'vit_fusion_abc_best.pth')
 
     if output_path is None:
-        output_path = os.path.join(ROOT_DIR, 'outputs', 'vit_fusion_attention.png')
+        output_path = os.path.join(ROOT_DIR, 'outputs', 'AG-ViT_attention.png')
 
     img = cv2.imread(image_path)
     if img is None:
@@ -167,7 +167,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--image', required=True)
     parser.add_argument('--weights', default=os.path.join(ROOT_DIR, 'weights', 'vit_fusion_best.pth'))
-    parser.add_argument('--output', default=os.path.join(ROOT_DIR, 'outputs', 'visualizations', 'attention', 'vit_fusion_rollout.png'))
+    parser.add_argument('--output', default=os.path.join(ROOT_DIR, 'outputs', 'visualizations', 'attention', 'AG-ViT_rollout.png'))
     parser.add_argument('--num_classes', type=int, default=None)
     parser.add_argument('--gamma', type=float, default=1.0)
     parser.add_argument('--alpha', type=float, default=0.6)

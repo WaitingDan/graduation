@@ -15,7 +15,6 @@ sys.path.append(ROOT_DIR)
 from utils.metrics import evaluate_model
 from utils.common import build_default_transforms
 import matplotlib.pyplot as plt
-import numpy as np
 
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
@@ -235,6 +234,9 @@ def run_evaluation(
         if name not in models:
             continue
 
+        # display label used in plot titles/annotations (map vit_fusion -> AG-ViT)
+        display_label = 'AG-ViT' if name == 'vit_fusion' else name
+
         # prepare model instance for evaluation; for vit_fusion try to honor saved metadata
         weight_path = models[name]["weight"]
         model = models[name]["model"]
@@ -355,7 +357,8 @@ def run_evaluation(
                 ax2.set_xticklabels([str(i) for i in indices], rotation=0)
                 ax2.set_ylabel('Recall')
                 ax2.set_xlabel('Class Index')
-                ax2.set_title(f'Per-class Recall: {name} (indexed labels)')
+                display_label = 'AG-ViT' if name == 'vit_fusion' else name
+                ax2.set_title(f'Per-class Recall: {display_label} (indexed labels)')
                 plt.tight_layout()
                 img_path = os.path.join(out_dir, f'per_class_{name}{file_suffix}.png')
                 fig2.savefig(img_path)
@@ -379,7 +382,7 @@ def run_evaluation(
             ax.set(xticks=np.arange(len(class_names)), yticks=np.arange(len(class_names)),
                    xticklabels=indices, yticklabels=indices,
                    ylabel='True label (index)', xlabel='Predicted label (index)',
-                   title=f'Confusion Matrix: {name}')
+                   title=f'Confusion Matrix: {display_label}')
             plt.setp(ax.get_xticklabels(), rotation=0)
             thresh = cm.max() / 2.
             for i in range(cm.shape[0]):

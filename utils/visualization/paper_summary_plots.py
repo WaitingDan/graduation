@@ -57,6 +57,21 @@ def _mean_std(vals):
     return float(arr.mean()), float(arr.std(ddof=0))
 
 
+DISPLAY_NAME_MAP = {
+    "vit_fusion": "AG-ViT",
+}
+
+CONFMAT_LEVEL_DISPLAY = {
+    "light": "轻度遮挡",
+    "medium": "中度遮挡",
+    "heavy": "重度遮挡",
+}
+
+
+def _display_name(model_name):
+    return DISPLAY_NAME_MAP.get(model_name, model_name)
+
+
 def read_summary_rows(summary_csv):
     with open(summary_csv, "r", encoding="utf-8") as f:
         return list(csv.DictReader(f))
@@ -214,8 +229,9 @@ def plot_curve_with_errorbars(curve_rows, out_png, models):
         bal_std = np.asarray([r["balanced_accuracy_std"] for r in rows], dtype=float)
 
         color = model_colors.get(m, "#7f7f7f")
-        ax1.errorbar(xs, macro_mean, yerr=macro_std, marker="o", capsize=3, label=m, color=color)
-        ax2.errorbar(xs, bal_mean, yerr=bal_std, marker="o", capsize=3, label=m, color=color)
+        label = _display_name(m)
+        ax1.errorbar(xs, macro_mean, yerr=macro_std, marker="o", capsize=3, label=label, color=color)
+        ax2.errorbar(xs, bal_mean, yerr=bal_std, marker="o", capsize=3, label=label, color=color)
 
     for ax in axes:
         ax.set_xlabel("遮挡比例")
@@ -321,7 +337,7 @@ def plot_class_drop_heatmap(class_indices, models, mat, out_png):
     cbar.set_label("Recall 下降量（clean - heavy）")
 
     ax.set_xticks(np.arange(len(models)))
-    ax.set_xticklabels(models, rotation=0)
+    ax.set_xticklabels([_display_name(m) for m in models], rotation=0)
     ax.set_yticks(np.arange(len(class_indices)))
     ax.set_yticklabels([str(x) for x in class_indices])
     ax.set_xlabel("模型")
@@ -395,6 +411,7 @@ def plot_seed_variance_panels(seed_rows, models, out_png):
         ax_macro = axes[i, 0]
         ax_bal = axes[i, 1]
         color = model_colors.get(m, "#7f7f7f")
+        label = _display_name(m)
 
         seed_data = grouped.get(m, {})
         all_macro = []
@@ -418,10 +435,10 @@ def plot_seed_variance_panels(seed_rows, models, out_png):
             base_x = all_x[0]
             macro_mean = np.mean(np.vstack(all_macro), axis=0)
             bal_mean = np.mean(np.vstack(all_bal), axis=0)
-            ax_macro.plot(base_x, macro_mean, marker="o", linewidth=2.2, color=color, label=f"{m} 均值")
-            ax_bal.plot(base_x, bal_mean, marker="o", linewidth=2.2, color=color, label=f"{m} 均值")
+            ax_macro.plot(base_x, macro_mean, marker="o", linewidth=2.2, color=color, label=f"{label} 均值")
+            ax_bal.plot(base_x, bal_mean, marker="o", linewidth=2.2, color=color, label=f"{label} 均值")
 
-        ax_macro.set_ylabel(f"{m}\nmacro-F1")
+        ax_macro.set_ylabel(f"{label}\nmacro-F1")
         ax_bal.set_ylabel("balanced-accuracy")
         ax_macro.grid(alpha=0.25, linestyle="--")
         ax_bal.grid(alpha=0.25, linestyle="--")
@@ -478,40 +495,56 @@ def _find_available_seed(clean_root, heavy_root, preferred_seed):
     return candidates[0]
 
 
-def plot_confmat_comparison_panel(runs_root, occlusion_mode, models, preferred_seed, out_png):
+def _find_shared_seed_for_levels(level_roots, preferred_seed):
+    preferred = f"seed_{preferred_seed}"
+    if all(os.path.isdir(os.path.join(root, preferred)) for root in level_roots):
+        return preferred
+
+    shared = None
+    for root in level_roots:
+        if not os.path.isdir(root):
+            raise FileNotFoundError(f"Missing runs directory: {root}")
+        seeds = {
+            d
+            for d in os.listdir(root)
+            if d.startswith("seed_") and os.path.isdir(os.path.join(root, d))
+        }
+        shared = seeds if shared is None else shared & seeds
+
+    if not shared:
+        raise RuntimeError("未找到 light / medium / heavy 共同存在的 seed 目录")
+    return sorted(shared)[0]
+
+
+def plot_confmat_level_panel(runs_root, occlusion_mode, level, models, seed_dir, out_png):
     import matplotlib.pyplot as plt
     import matplotlib.image as mpimg
 
-    clean_root = os.path.join(runs_root, "clean")
-    heavy_root = os.path.join(runs_root, f"{occlusion_mode}_heavy")
-    if not os.path.isdir(clean_root) or not os.path.isdir(heavy_root):
-        raise FileNotFoundError(f"Missing clean/heavy runs: {clean_root} / {heavy_root}")
+    if len(models) != 4:
+        raise ValueError(f"Expected exactly 4 models for the 2x2 confusion matrix panel, got {len(models)}")
 
-    seed_dir = _find_available_seed(clean_root, heavy_root, preferred_seed)
-    fig, axes = plt.subplots(len(models), 2, figsize=(12, 4.8 * max(1, len(models))))
-    if len(models) == 1:
-        axes = [axes]
+    scenario = f"{occlusion_mode}_{level}"
+    scenario_root = os.path.join(runs_root, scenario)
+    if not os.path.isdir(scenario_root):
+        raise FileNotFoundError(f"Missing runs directory: {scenario_root}")
 
-    for i, m in enumerate(models):
-        clean_png = os.path.join(clean_root, seed_dir, f"confmat_{m}.png")
-        heavy_png = os.path.join(heavy_root, seed_dir, f"confmat_{m}.png")
-        if not os.path.exists(clean_png) or not os.path.exists(heavy_png):
-            raise FileNotFoundError(f"Missing confusion matrix png for model={m}, seed={seed_dir}")
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
 
-        ax_clean, ax_heavy = axes[i]
-        ax_clean.imshow(mpimg.imread(clean_png))
-        ax_heavy.imshow(mpimg.imread(heavy_png))
-        ax_clean.axis("off")
-        ax_heavy.axis("off")
-        ax_clean.set_title(f"{m} | clean | {seed_dir}")
-        ax_heavy.set_title(f"{m} | {occlusion_mode}_heavy | {seed_dir}")
+    for ax, m in zip(axes.flat, models):
+        confmat_png = os.path.join(scenario_root, seed_dir, f"confmat_{m}.png")
+        if not os.path.exists(confmat_png):
+            raise FileNotFoundError(f"Missing confusion matrix png for model={m}, scenario={scenario}, seed={seed_dir}")
 
-    fig.suptitle("clean 与 heavy 场景混淆矩阵对照（Top-2 模型）", fontsize=14)
-    plt.tight_layout(rect=[0, 0, 1, 0.97])
+        ax.imshow(mpimg.imread(confmat_png))
+        ax.axis("off")
+        ax.set_title(_display_name(m))
+
+    fig.suptitle(f"{CONFMAT_LEVEL_DISPLAY.get(level, level)} 混淆矩阵拼图（{seed_dir}）", fontsize=14)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     os.makedirs(os.path.dirname(out_png), exist_ok=True)
     plt.savefig(out_png, dpi=300, bbox_inches="tight")
     plt.close(fig)
-    return seed_dir
+    return scenario
 
 
 def main():
@@ -557,28 +590,36 @@ def main():
     write_class_drop_csv(heatmap_csv, class_indices, args.models, mat)
     plot_class_drop_heatmap(class_indices, args.models, mat, heatmap_png)
 
-    # Figure D: clean vs heavy confusion matrix comparison panel for top-2 models
-    ranking_csv = os.path.join(ROOT_DIR, layout["ranking"], "robustness_slope_ranking.csv")
-    top2_models = _pick_top_models_from_ranking(ranking_csv, args.models)
-    confmat_panel_png = os.path.join(ROOT_DIR, layout["plots"], "paper_fig_confmat_clean_vs_heavy_top2.png")
-    used_seed_dir = plot_confmat_comparison_panel(
-        runs_root=os.path.join(ROOT_DIR, layout["runs"]),
-        occlusion_mode=args.occlusion_mode,
-        models=top2_models,
-        preferred_seed=args.seed_for_confmat,
-        out_png=confmat_panel_png,
+    # Figure D: 2x2 confusion matrix panels for four models under light/medium/heavy occlusion
+    confmat_levels = ["light", "medium", "heavy"]
+    shared_seed_dir = _find_shared_seed_for_levels(
+        [os.path.join(ROOT_DIR, layout["runs"], f"{args.occlusion_mode}_{level}") for level in confmat_levels],
+        args.seed_for_confmat,
     )
+    confmat_panel_pngs = []
+    for level in confmat_levels:
+        confmat_panel_png = os.path.join(ROOT_DIR, layout["plots"], f"paper_fig_confmat_{level}_2x2.png")
+        plot_confmat_level_panel(
+            runs_root=os.path.join(ROOT_DIR, layout["runs"]),
+            occlusion_mode=args.occlusion_mode,
+            level=level,
+            models=args.models,
+            seed_dir=shared_seed_dir,
+            out_png=confmat_panel_png,
+        )
+        confmat_panel_pngs.append(confmat_panel_png)
 
     print("Saved:", curve_png)
     print("Saved:", heatmap_png)
     print("Saved:", seed_curve_png)
-    print("Saved:", confmat_panel_png)
+    for confmat_panel_png in confmat_panel_pngs:
+        print("Saved:", confmat_panel_png)
     print("Saved:", curve_csv)
     print("Saved:", heatmap_csv)
     print("Saved:", seed_curve_csv)
     print("Shared seeds used for heatmap:", ", ".join(seeds))
-    print("Seed used for confusion matrix panel:", used_seed_dir)
-    print("Top-2 models used for confusion matrix panel:", ", ".join(top2_models))
+    print("Seed used for confusion matrix panels:", shared_seed_dir)
+    print("Models used for confusion matrix panels:", ", ".join(_display_name(m) for m in args.models))
 
 
 if __name__ == "__main__":

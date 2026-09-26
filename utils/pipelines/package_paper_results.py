@@ -54,8 +54,12 @@ def build_mapping(layout):
             os.path.join("main_text", "figures", "fig04_per_class_recall_drop_heatmap_idx.png"),
         os.path.join(layout["plots"], "paper_fig_seed_variance_curves.png"):
             os.path.join("main_text", "figures", "fig05_seed_variance_curves.png"),
-        os.path.join(layout["plots"], "paper_fig_confmat_clean_vs_heavy_top2.png"):
-            os.path.join("main_text", "figures", "fig06_confmat_clean_vs_heavy_top2.png"),
+        os.path.join(layout["plots"], "paper_fig_confmat_light_2x2.png"):
+            os.path.join("main_text", "figures", "fig06_confmat_light_2x2.png"),
+        os.path.join(layout["plots"], "paper_fig_confmat_medium_2x2.png"):
+            os.path.join("main_text", "figures", "fig07_confmat_medium_2x2.png"),
+        os.path.join(layout["plots"], "paper_fig_confmat_heavy_2x2.png"):
+            os.path.join("main_text", "figures", "fig08_confmat_heavy_2x2.png"),
 
         os.path.join(layout["metrics"], "summary_keypart_metrics_agg.csv"):
             os.path.join("main_text", "tables", "tab01_summary_keypart_metrics_agg.csv"),

@@ -67,7 +67,7 @@ def call_vit_rollout(image_path, weights=None, out_dir=None):
 def call_fusion_rollout(image_path, weights=None, out_dir=None):
     out_file = None
     if out_dir:
-        out_file = os.path.join(out_dir, os.path.basename(image_path).replace('.', '_') + '_vit_fusion.png')
+        out_file = os.path.join(out_dir, os.path.basename(image_path).replace('.', '_') + '_AG-ViT.png')
     saved = generate_fusion_rollout(
         image_path=image_path,
         weight_path=weights,
@@ -156,7 +156,8 @@ def run_visuals(model, csv_path, n=3, out_dir=None, weights=None):
             elif model == 'vit_fusion':
                 saved = call_fusion_rollout(img_path, weights=weights, out_dir=out_dir)
                 if saved and os.path.exists(saved):
-                    new_name = f"{tag}_{model}_{base}_t{true_idx}_p{pred_idx}_{prob:.3f}.png"
+                    label = 'AG-ViT'
+                    new_name = f"{tag}_{label}_{base}_t{true_idx}_p{pred_idx}_{prob:.3f}.png"
                     new_path = os.path.join(out_dir, new_name)
                     try:
                         os.replace(saved, new_path)

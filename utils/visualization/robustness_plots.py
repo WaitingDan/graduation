@@ -41,6 +41,14 @@ MODEL_COLORS = {
     'vgg': '#2ca02c',        # green
 }
 
+# Map internal model names to user-visible display names (keep keys stable for color lookups)
+DISPLAY_NAME_MAP = {
+    'vit_fusion': 'AG-ViT',
+}
+
+def _display_name(model_name):
+    return DISPLAY_NAME_MAP.get(model_name, model_name)
+
 
 PAPER_FONT_SIZE_PT = 10.5
 
@@ -279,6 +287,7 @@ def plot_robustness_ranking(data, output_dir):
     import matplotlib.pyplot as plt
 
     order, sorted_models, _, details = _sorted_by_composite(data)
+    display_models = [_display_name(m) for m in sorted_models]
 
     # prepare AUPC (normalized) average as an additional panel
     f1_aupc = np.asarray(data.get('macro_f1_aupc_norm') or [0.0] * len(data['model']), dtype=float)
@@ -300,7 +309,7 @@ def plot_robustness_ranking(data, output_dir):
     flat_axes = axes.flatten()
     for ax, (title, values) in zip(flat_axes, chart_items):
         sorted_values = values[order]
-        bars = ax.barh(sorted_models, sorted_values, color=_model_colors(sorted_models), edgecolor='black', linewidth=0.8)
+        bars = ax.barh(display_models, sorted_values, color=_model_colors(sorted_models), edgecolor='black', linewidth=0.8)
         # emphasize fusion model visually: thicker edge + full opacity
         for i, (bar, model_name) in enumerate(zip(bars, sorted_models)):
             if model_name == 'vit_fusion':
@@ -344,6 +353,7 @@ def plot_robustness_summary(data, output_dir):
     if weights is None:
         weights = {'aupc': 0.5, 'slope': 0.25, 'drop': 0.25}
     order, sorted_models, sorted_scores, details = _sorted_by_composite(data, weights=weights)
+    display_models = [_display_name(m) for m in sorted_models]
 
     aupc_component = weights.get('aupc', 0.5) * details['aupc_score'][order]
     slope_component = weights.get('slope', 0.25) * details['slope_score'][order]
@@ -352,7 +362,7 @@ def plot_robustness_summary(data, output_dir):
     fig, axes = plt.subplots(1, 2, figsize=(16, 7), sharey=True)
     ax, ax_comp = axes
 
-    bars = ax.barh(sorted_models, sorted_scores, color=_model_colors(sorted_models), alpha=0.9, edgecolor='black', linewidth=1.0)
+    bars = ax.barh(display_models, sorted_scores, color=_model_colors(sorted_models), alpha=0.9, edgecolor='black', linewidth=1.0)
     # highlight fusion in summary plot
     for i, (bar, model_name) in enumerate(zip(bars, sorted_models)):
         if model_name == 'vit_fusion':
@@ -387,7 +397,7 @@ def plot_robustness_summary(data, output_dir):
     ax_comp.set_xlim([0, 1.16])
     ax_comp.grid(axis='x', alpha=0.3, linestyle='--')
     ax_comp.set_yticks(y)
-    ax_comp.set_yticklabels(sorted_models)
+    ax_comp.set_yticklabels(display_models)
     ax_comp.legend(loc='lower right', fontsize=PAPER_FONT_SIZE_PT)
 
     fig.text(
@@ -412,7 +422,7 @@ def plot_robustness_summary(data, output_dir):
     print('\n' + '=' * 50)
     print('综合鲁棒性相对排序（从最好到最差）:')
     print('=' * 50)
-    for i, (model, score) in enumerate(zip(sorted_models, sorted_scores), 1):
+    for i, (model, score) in enumerate(zip(display_models, sorted_scores), 1):
         print(f'{i}. {model:12s} - 相对指数: {score:.4f}')
     print('=' * 50 + '\n')
 
